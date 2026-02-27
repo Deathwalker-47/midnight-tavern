@@ -1,0 +1,20 @@
+DO NOT ASK QUESTIONS. Execute immediately. Create these files now:
+
+1) backend/app/core/config.py - Pydantic BaseSettings class loading DATABASE_URL, REDIS_URL, SECRET_KEY, CORS_ORIGINS (comma-separated string), DEBUG from environment variables. Use pydantic-settings.
+
+2) backend/app/core/logging.py - structlog setup with JSON output processor, request_id context binding via structlog.contextvars.
+
+3) backend/app/core/middleware.py - Starlette BaseHTTPMiddleware that generates a UUID4 request_id per request, binds it to structlog context, adds X-Request-ID response header.
+
+4) backend/app/core/errors.py - AppError base exception class with status_code and error_code fields. Global exception handler that catches AppError and unhandled exceptions, returns JSON: {"error": {"code": "string", "message": "string", "details": null}, "request_id": "string"}.
+
+5) backend/app/api/v1/router.py - APIRouter with GET /healthz returning {"status": "ok"} and GET /readyz returning {"status": "ok"} (placeholder). Use Pydantic response models.
+
+6) backend/app/main.py - FastAPI app with async lifespan context manager (empty startup/shutdown for now), CORSMiddleware using config.CORS_ORIGINS, RequestID middleware, register error handlers, include v1 router under /api/v1 prefix.
+
+All functions must be async, all must have type hints, use Pydantic models for responses.
+
+After creating all files, run these git commands:
+  git add .
+  git commit -m "feat: backend skeleton with config logging middleware errors health"
+  git push origin main

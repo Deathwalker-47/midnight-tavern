@@ -1,0 +1,7 @@
+Hello! 👋
+
+I'm ready to help you build Midnight Tavern. I can see you're working on Sprint A with the foundation build ahead of you. The project scaffold is in place, and you have a clear task queue to work through.
+
+What would you like to tackle first? I'd suggest starting with the backend skeleton (task 1) to get the FastAPI app bootstrapped with proper config, logging, and middleware—that'll give us a solid foundation for everything else.
+
+Let me know what you'd like to work on!
