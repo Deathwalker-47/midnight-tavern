@@ -42,7 +42,7 @@ Modular monolith. Single API + single web frontend. Internal module boundaries t
 Building from scratch: Stage 0 + Module 1 + Module 2 with hardening baked in.
 
 ### Task Queue
-1. [ ] Backend skeleton: FastAPI app with lifespan, config, logging, error middleware, health endpoints
+1. [x] Backend skeleton: FastAPI app with lifespan, config, logging, error middleware, health endpoints
 2. [ ] Database setup: async SQLAlchemy + Alembic + connection pooling with retries
 3. [ ] Auth module: register, login, logout, me (httpOnly cookies, JWT or session-based)
 4. [ ] Users module: profile, provider key storage (encrypted)
@@ -63,6 +63,9 @@ Building from scratch: Stage 0 + Module 1 + Module 2 with hardening baked in.
 
 ### Blockers
 - (none)
+
+### Troubleshooting Reference
+Read docs/bootstrap-troubleshooting.md for known environment issues and fixes. Update it when fixing new issues.
 
 ### Session Log
 - 2026-02-22: Bootstrap started. Repo created, scaffold built, starting Sprint A.
