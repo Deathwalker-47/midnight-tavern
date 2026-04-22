@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str
     DEBUG: bool = False
 
+    # Dungeon Master AI
+    ANTHROPIC_API_KEY: str | None = None
+    DM_DEFAULT_MODEL: str = "claude-haiku-4-5-20251001"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

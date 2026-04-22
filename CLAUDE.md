@@ -48,7 +48,7 @@ Building from scratch: Stage 0 + Module 1 + Module 2 with hardening baked in.
 4. [ ] Users module: profile, provider key storage (encrypted)
 5. [ ] Characters module: full CRUD with soft delete
 6. [ ] Chats module: CRUD with character association
-7. [ ] Messages module: store/list with pagination
+7. [ ] Messages module: store/list with pagination + message_type enum (user/character/dm)
 8. [ ] Provider abstraction: adapter pattern with unified request/response
 9. [ ] Anthropic provider: streaming + non-streaming generation
 10. [ ] SSE streaming: proper streaming with no buffering issues
@@ -57,9 +57,47 @@ Building from scratch: Stage 0 + Module 1 + Module 2 with hardening baked in.
 13. [ ] Frontend: chat view with message list + composer
 14. [ ] Frontend: SSE streaming integration for live generation
 15. [ ] Integration testing: full smoke test flow
+16. [x] Dungeon Master AI module: scaffold (models, schemas, dice, tools, validation, service, router)
+17. [ ] Dungeon Master AI module: Alembic migration (game_rulesets, dm_sessions, character_sheets, dm_rolls, dm_actions)
+18. [ ] Dungeon Master AI module: wire DM evaluation into chat message flow (pre-story-AI hook)
+19. [ ] Dungeon Master AI module: auth wiring (add user_id scope to rulesets/sessions when auth is ready)
+20. [ ] Frontend: integrate DMPanel into chat layout
+21. [ ] Frontend: render DMMessage events from SSE stream
+
+### Dungeon Master AI Architecture
+Separate AI agent (runs before story AI) handling game mechanics. Design inspired by Isekai Zero's "Dungeon Mind" — improved with server-side programmatic validation, arbitrary dice systems, and PostgreSQL-backed transactional stat tracking.
+
+Key design decisions:
+- DM runs FIRST — can reject/pause before story AI fires
+- Stripped context: last 10 msgs + character sheet + rules reminder (appended last for recency bias)
+- Schema-driven dynamic tools: stat_schema → Anthropic tool definitions generated at runtime
+- Base + modifier delta pattern: deltas accumulate, 0 = reset to initial_value
+- Programmatic validation before DB write: clamping, death state detection, unknown stat rejection
+- DM runs on cheap model (Haiku default) — set DM_DEFAULT_MODEL or ruleset.recommended_model
+- SSE event types: dm_thinking, dm_roll, dm_stat_update, dm_inventory_update, dm_skill_update, dm_reject, dm_ask, dm_done
+
+New env vars:
+- ANTHROPIC_API_KEY — required for DM agent
+- DM_DEFAULT_MODEL — default DM model (default: claude-haiku-4-5-20251001)
+
+New module: backend/app/modules/dungeon_master/
+- models.py — GameRuleset, DMSession, CharacterSheet, DMRoll, DMAction
+- schemas.py — Pydantic request/response types
+- dice.py — server-side dice engine (d4–d100, FATE, keep-highest/lowest)
+- tools.py — dynamic Anthropic tool generation from stat schema
+- validation.py — stat delta validation, clamping, death state detection
+- service.py — agentic evaluation loop with SSE emission + prompt caching
+- router.py — /api/v1/dm/* endpoints
+
+New frontend:
+- web/src/store/dmStore.ts — Zustand store for DM state + SSE event handler
+- web/src/api/dm.ts — typed DM API client + evaluateDMAction SSE helper
+- web/src/components/DMPanel/ — CharacterSheet, DiceRoller, RollHistory, index
+- web/src/components/chat/DMMessage.tsx — DM event chat bubbles
 
 ### Completed
 - [x] Project scaffold and GitHub repo created
+- [x] Dungeon Master AI module scaffold
 
 ### Blockers
 - (none)
@@ -69,3 +107,4 @@ Read docs/bootstrap-troubleshooting.md for known environment issues and fixes. U
 
 ### Session Log
 - 2026-02-22: Bootstrap started. Repo created, scaffold built, starting Sprint A.
+- 2026-04-22: Dungeon Master AI module scaffolded. Full backend module + frontend components ready. Awaits DB migration after task 2 (database setup) is complete.
