@@ -1,11 +1,19 @@
-"""API v1 router with health check endpoints."""
+"""API v1 router."""
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.modules.auth.router import router as auth_router
+from app.modules.characters.router import router as characters_router
+from app.modules.chats.router import router as chats_router
 from app.modules.dungeon_master.router import router as dm_router
+from app.modules.users.router import router as users_router
 
 router = APIRouter()
+router.include_router(auth_router)
+router.include_router(users_router)
+router.include_router(characters_router)
+router.include_router(chats_router)
 router.include_router(dm_router)
 
 

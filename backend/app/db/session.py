@@ -1,9 +1,4 @@
-"""Async SQLAlchemy session factory.
-
-Connection pooling hardening (pool_size, max_overflow, retries) will be
-added in the database setup task. This provides the basic async session
-dependency used by all modules.
-"""
+"""Async SQLAlchemy session factory with connection pooling."""
 
 from collections.abc import AsyncGenerator
 
@@ -11,10 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import settings
 
+# Normalize URL to asyncpg driver
+_db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=1800,
 )
 
 AsyncSessionLocal = async_sessionmaker(

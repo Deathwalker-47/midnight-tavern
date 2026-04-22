@@ -188,6 +188,16 @@ async def _exec_set_stats(
 
     return {
         "applied": [c.name for c in validation.changes],
+        "changes": [
+            {
+                "name": c.name,
+                "display_name": c.display_name,
+                "old_value": c.old_value,
+                "new_value": c.new_value,
+                "delta": c.delta,
+            }
+            for c in validation.changes
+        ],
         "new_stats": validation.new_stats,
         "death_state": validation.death_state,
         "clamped": validation.clamped_stats,
@@ -343,6 +353,7 @@ async def evaluate_action(
                     "data": {
                         "character_id": tool_input.get("character_id"),
                         "new_stats": result_data.get("new_stats", {}),
+                        "changes": result_data.get("changes", []),
                         "death_state": result_data.get("death_state", False),
                     },
                 }

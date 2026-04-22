@@ -43,26 +43,26 @@ Building from scratch: Stage 0 + Module 1 + Module 2 with hardening baked in.
 
 ### Task Queue
 1. [x] Backend skeleton: FastAPI app with lifespan, config, logging, error middleware, health endpoints
-2. [ ] Database setup: async SQLAlchemy + Alembic + connection pooling with retries
-3. [ ] Auth module: register, login, logout, me (httpOnly cookies, JWT or session-based)
-4. [ ] Users module: profile, provider key storage (encrypted)
-5. [ ] Characters module: full CRUD with soft delete
-6. [ ] Chats module: CRUD with character association
-7. [ ] Messages module: store/list with pagination + message_type enum (user/character/dm)
-8. [ ] Provider abstraction: adapter pattern with unified request/response
-9. [ ] Anthropic provider: streaming + non-streaming generation
-10. [ ] SSE streaming: proper streaming with no buffering issues
-11. [ ] Frontend: React app scaffold with routing, auth pages, basic layout
-12. [ ] Frontend: character list + creation
-13. [ ] Frontend: chat view with message list + composer
-14. [ ] Frontend: SSE streaming integration for live generation
+2. [x] Database setup: async SQLAlchemy + Alembic + connection pooling with retries
+3. [x] Auth module: register, login, logout, me (httpOnly cookies, JWT or session-based)
+4. [x] Users module: profile, provider key storage (encrypted)
+5. [x] Characters module: full CRUD with soft delete
+6. [x] Chats module: CRUD with character association
+7. [x] Messages module: store/list with pagination + message_type enum (user/character/dm)
+8. [x] Provider abstraction: adapter pattern with unified request/response
+9. [x] Anthropic provider: streaming + non-streaming generation
+10. [x] SSE streaming: proper streaming with no buffering issues
+11. [x] Frontend: React app scaffold with routing, auth pages, basic layout
+12. [x] Frontend: character list + creation
+13. [x] Frontend: chat view with message list + composer
+14. [x] Frontend: SSE streaming integration for live generation
 15. [ ] Integration testing: full smoke test flow
 16. [x] Dungeon Master AI module: scaffold (models, schemas, dice, tools, validation, service, router)
-17. [ ] Dungeon Master AI module: Alembic migration (game_rulesets, dm_sessions, character_sheets, dm_rolls, dm_actions)
-18. [ ] Dungeon Master AI module: wire DM evaluation into chat message flow (pre-story-AI hook)
-19. [ ] Dungeon Master AI module: auth wiring (add user_id scope to rulesets/sessions when auth is ready)
-20. [ ] Frontend: integrate DMPanel into chat layout
-21. [ ] Frontend: render DMMessage events from SSE stream
+17. [x] Dungeon Master AI module: Alembic migration (game_rulesets, dm_sessions, character_sheets, dm_rolls, dm_actions)
+18. [x] Dungeon Master AI module: wire DM evaluation into chat message flow (pre-story-AI hook)
+19. [x] Dungeon Master AI module: auth wiring (user_id on rulesets/sessions via get_current_user)
+20. [x] Frontend: integrate DMPanel into chat layout
+21. [x] Frontend: render DMMessage events from SSE stream
 
 ### Dungeon Master AI Architecture
 Separate AI agent (runs before story AI) handling game mechanics. Design inspired by Isekai Zero's "Dungeon Mind" — improved with server-side programmatic validation, arbitrary dice systems, and PostgreSQL-backed transactional stat tracking.
