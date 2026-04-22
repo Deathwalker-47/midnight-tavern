@@ -3,8 +3,10 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.modules.dungeon_master.router import router as dm_router
 
 router = APIRouter()
+router.include_router(dm_router)
 
 
 class HealthResponse(BaseModel):
