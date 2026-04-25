@@ -8,5 +8,8 @@ Character/roleplay chat web app with multi-LLM support and inline image generati
 - **Queue:** Redis + ARQ
 - **Streaming:** SSE (Server-Sent Events)
 
+## Documentation
+- Start here for all docs and plans: [`docs/README.md`](docs/README.md)
+
 ## Development
 See `CLAUDE.md` for project conventions and current sprint status.
