@@ -34,6 +34,7 @@ export function DMPanel({ statSchema }: Props) {
     skills,
     rolls,
     isEvaluating,
+    isAlive,
     pendingQuestion,
     lastRejection,
     deathState,
@@ -123,6 +124,7 @@ export function DMPanel({ statSchema }: Props) {
                 stats={stats}
                 schema={statSchema}
                 deathState={deathState}
+                isAlive={isAlive}
               />
             )}
             {activeTab === "dice" && (

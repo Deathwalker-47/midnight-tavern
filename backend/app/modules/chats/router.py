@@ -44,6 +44,7 @@ from app.modules.dungeon_master.service import (
     get_session_by_chat,
 )
 from app.modules.dungeon_master.schemas import DMVerdict
+from app.modules.dungeon_master.pre_validator import PreValidator
 
 logger = structlog.get_logger(__name__)
 
@@ -180,25 +181,44 @@ async def send_message(
                 if m.id != user_msg.id
             ]
 
-            async for event in evaluate_action(
-                db=db,
-                session=dm_session,
-                sheet=sheet,
-                recent_messages=recent_dicts,
-                player_action=body.content,
-                message_id=user_msg.id,
-            ):
-                event_type = event["type"]
-                event_data = json.dumps(event.get("data", {}))
-                yield f"event: {event_type}\ndata: {event_data}\n\n"
+            # Pre-validation: deterministic Python checks before any LLM call
+            enforcement = dm_session.ruleset.enforcement_config or {}
+            validator = PreValidator(enforcement)
+            pre_result = await validator.validate(
+                player_message=body.content,
+                sheet_stats=sheet.stats or {},
+                sheet_skills=list(sheet.skills.values()) if sheet.skills else [],
+                sheet_inventory=sheet.inventory or [],
+                is_alive=sheet.is_alive,
+            )
 
-                if event_type == "dm_done":
-                    from app.modules.dungeon_master.schemas import DMEvalResult
-                    result = DMEvalResult(**event["data"])
-                    if result.verdict != DMVerdict.continue_:
-                        dm_rejected = True
-                    else:
-                        narrative_hint = result.narrative_hint
+            # Hard reject: emit event and stop without calling the DM model
+            if pre_result.hard_reject:
+                yield f"event: dm_reject\ndata: {json.dumps({'reason': pre_result.reject_reason})}\n\n"
+                yield f"event: dm_done\ndata: {json.dumps({'verdict': 'reject', 'rejection_reason': pre_result.reject_reason, 'stat_changes': [], 'roll_ids': [], 'death_state': False})}\n\n"
+                dm_rejected = True
+            else:
+                async for event in evaluate_action(
+                    db=db,
+                    session=dm_session,
+                    sheet=sheet,
+                    recent_messages=recent_dicts,
+                    player_action=body.content,
+                    message_id=user_msg.id,
+                    pre_validation=pre_result,
+                ):
+                    event_type = event["type"]
+                    event_data = json.dumps(event.get("data", {}))
+                    yield f"event: {event_type}\ndata: {event_data}\n\n"
+
+                    if event_type == "dm_done":
+                        from app.modules.dungeon_master.schemas import DMEvalResult
+                        result = DMEvalResult(**event["data"])
+                        if result.verdict != DMVerdict.continue_:
+                            dm_rejected = True
+                        else:
+                            # Use full context injector output for narrative AI
+                            narrative_hint = result.narrative_context or result.narrative_hint
 
         if dm_rejected:
             return
@@ -230,7 +250,8 @@ async def send_message(
         if character.personality:
             system_parts.append(f"\nPersonality: {character.personality}")
         if narrative_hint:
-            system_parts.append(f"\n[DM ruling: {narrative_hint}]")
+            # narrative_hint now carries the full [DUNGEON MIND RULING] block
+            system_parts.append(f"\n{narrative_hint}")
         system = "\n".join(system_parts)
 
         full_response = ""

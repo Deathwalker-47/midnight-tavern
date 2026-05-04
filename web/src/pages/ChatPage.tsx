@@ -10,13 +10,14 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { chatsApi, sendMessage, type Message } from "../api/chats";
 import { charactersApi, type Character } from "../api/characters";
 import { ApiError } from "../api/client";
 import { DMPanel } from "../components/DMPanel";
 import { DMMessage, type DMMessageType } from "../components/chat/DMMessage";
-import { useDMStore, handleDMEvent } from "../store/dmStore";
+import { RollBar } from "../components/chat/RollBar";
+import { useDMStore, handleDMEvent, type DMEvalResult, type DMRoll } from "../store/dmStore";
 import { dmApi, type StatDefinition } from "../api/dm";
 
 // ── Message bubble ────────────────────────────────────────────────────────────
@@ -55,6 +56,11 @@ interface DMEvent {
   message: DMMessageType;
 }
 
+interface MessageDMData {
+  result: DMEvalResult;
+  rolls: DMRoll[];
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function ChatPage() {
@@ -70,10 +76,24 @@ export function ChatPage() {
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Per-message DM game event data (for RollBar rendering)
+  const [messageEvents, setMessageEvents] = useState<Record<string, MessageDMData>>({});
+  // Answer input state
+  const [answerInput, setAnswerInput] = useState("");
+  const [answerSubmitting, setAnswerSubmitting] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const { isActive: dmActive } = useDMStore();
+  // Captures the DM result + rolls to associate with the next assistant message
+  const pendingDMRef = useRef<MessageDMData | null>(null);
+
+  const {
+    isActive: dmActive,
+    sessionId,
+    rulesetId,
+    pendingQuestion,
+    pendingEventId,
+  } = useDMStore();
 
   // Load chat + messages + character
   useEffect(() => {
@@ -97,9 +117,11 @@ export function ChatPage() {
             setStatSchema(ruleset.stat_schema);
             const sheets = await dmApi.listSheets(session.id);
             if (sheets[0]) {
-              useDMStore.getState().updateStats(sheets[0].stats as Record<string, number | string>);
-              useDMStore.getState().updateInventory(sheets[0].inventory);
-              useDMStore.getState().updateSkills(sheets[0].skills as Record<string, number | string>);
+              const store = useDMStore.getState();
+              store.updateStats(sheets[0].stats as Record<string, number | string>);
+              store.updateInventory(sheets[0].inventory);
+              store.updateSkills(sheets[0].skills as Record<string, number | string>);
+              store.setIsAlive(sheets[0].is_alive);
             }
           }
         } catch {
@@ -121,11 +143,26 @@ export function ChatPage() {
   // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, dmEvents, streamingText]);
+  }, [messages, dmEvents, streamingText, pendingQuestion]);
 
   const pushDMEvent = useCallback((msg: DMMessageType) => {
     setDmEvents((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, message: msg }]);
   }, []);
+
+  async function handleAnswerSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const answer = answerInput.trim();
+    if (!answer || !sessionId || !pendingEventId || answerSubmitting) return;
+    setAnswerSubmitting(true);
+    try {
+      await useDMStore.getState().answerQuestion(sessionId, pendingEventId, answer);
+      setAnswerInput("");
+    } catch {
+      // ignore — user can retry
+    } finally {
+      setAnswerSubmitting(false);
+    }
+  }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -137,6 +174,7 @@ export function ChatPage() {
     setStreaming(true);
     setStreamingText("");
     setDmEvents([]);
+    pendingDMRef.current = null;
 
     // Optimistically add user message
     const tempMsg: Message = {
@@ -189,6 +227,14 @@ export function ChatPage() {
             } else if (type === "dm_done") {
               const summary = (data as { summary?: string }).summary;
               if (summary) pushDMEvent({ kind: "ruling", text: summary });
+
+              // Capture DM result + rolls to link to the next assistant message
+              const state = useDMStore.getState();
+              if (state.lastResult) {
+                const rollIds = state.lastResult.rollIds;
+                const relevantRolls = state.rolls.filter((r) => rollIds.includes(r.rollId));
+                pendingDMRef.current = { result: state.lastResult, rolls: relevantRolls };
+              }
             }
             return;
           }
@@ -207,6 +253,13 @@ export function ChatPage() {
             };
             setMessages((prev) => [...prev.filter((m) => m.id !== tempMsg.id), finalMsg]);
             setStreamingText("");
+
+            // Associate pending DM data with this assistant message
+            if (pendingDMRef.current) {
+              const captured = pendingDMRef.current;
+              setMessageEvents((prev) => ({ ...prev, [finalMsg.id]: captured }));
+              pendingDMRef.current = null;
+            }
           } else if (type === "error") {
             setError((data.message as string) ?? "Something went wrong");
           }
@@ -226,8 +279,6 @@ export function ChatPage() {
     return <div className="flex h-full items-center justify-center text-gray-500">Loading…</div>;
   }
 
-  // Build interleaved message list
-  // We render all stored messages + DM events + streaming bubble
   const allEvents = [...dmEvents];
 
   return (
@@ -242,18 +293,37 @@ export function ChatPage() {
             </div>
             <span className="font-medium text-sm text-gray-200">{character.name}</span>
             {dmActive && (
-              <span className="ml-auto text-xs text-indigo-400 flex items-center gap-1">
-                <span>⚔</span> DM Active
-              </span>
+              <div className="ml-auto flex items-center gap-3">
+                {rulesetId && (
+                  <Link
+                    to={`/dm/configs/${rulesetId}/edit`}
+                    className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                  >
+                    DM Settings
+                  </Link>
+                )}
+                <span className="text-xs text-indigo-400 flex items-center gap-1">
+                  <span>⚔</span> DM Active
+                </span>
+              </div>
             )}
           </div>
         )}
 
         {/* Message list */}
         <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4 space-y-3">
-          {messages.map((msg) =>
-            msg.role === "dm" ? null : <MessageBubble key={msg.id} message={msg} />
-          )}
+          {messages.map((msg) => {
+            if (msg.role === "dm") return null;
+            const dmData = msg.role === "character" ? messageEvents[msg.id] : undefined;
+            return (
+              <div key={msg.id}>
+                <MessageBubble message={msg} />
+                {dmData && (
+                  <RollBar result={dmData.result} rolls={dmData.rolls} />
+                )}
+              </div>
+            );
+          })}
 
           {/* DM events for current exchange */}
           {allEvents.map((ev) => (
@@ -273,6 +343,35 @@ export function ChatPage() {
 
           <div ref={bottomRef} />
         </div>
+
+        {/* DM ask-player answer input */}
+        {pendingQuestion && (
+          <form
+            onSubmit={handleAnswerSubmit}
+            className="flex-shrink-0 border-t border-yellow-800/40 bg-yellow-950/10 px-4 py-3 space-y-2"
+          >
+            <p className="text-xs text-yellow-300 font-medium">
+              ⚔ DM Question: {pendingQuestion}
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={answerInput}
+                onChange={(e) => setAnswerInput(e.target.value)}
+                placeholder="Type your answer…"
+                disabled={answerSubmitting}
+                className="flex-1 px-3 py-1.5 rounded-lg bg-gray-800 border border-yellow-800/40 text-gray-100 text-sm placeholder-gray-500 focus:outline-none focus:border-yellow-600 disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={!answerInput.trim() || answerSubmitting}
+                className="px-3 py-1.5 rounded-lg bg-yellow-700 hover:bg-yellow-600 text-white text-sm font-medium transition-colors disabled:opacity-40"
+              >
+                Answer
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* Composer */}
         <form

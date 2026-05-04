@@ -167,6 +167,9 @@ def _build_set_stats_tool(stat_schema: list[dict[str, Any]]) -> dict[str, Any]:
         display = stat.get("display_name", name)
         stat_type = stat.get("type", "number")
 
+        stat_desc = stat.get("description", "")
+        desc_suffix = f" — {stat_desc}" if stat_desc else ""
+
         if stat_type == "number":
             min_v = stat.get("min")
             max_v = stat.get("max")
@@ -174,7 +177,7 @@ def _build_set_stats_tool(stat_schema: list[dict[str, Any]]) -> dict[str, Any]:
             properties[name] = {
                 "type": "number",
                 "description": (
-                    f"Delta modifier for {display}{bounds}. "
+                    f"Delta modifier for {display}{bounds}{desc_suffix}. "
                     "Use negative to decrease (e.g. -8 for 8 damage), positive to increase. "
                     "Use 0 to reset to initial value (full heal equivalent)."
                 ),
@@ -184,7 +187,7 @@ def _build_set_stats_tool(stat_schema: list[dict[str, Any]]) -> dict[str, Any]:
         elif stat_type == "text":
             properties[name] = {
                 "type": "string",
-                "description": f"New text value for {display}",
+                "description": f"New text value for {display}{desc_suffix}",
             }
             stat_labels.append(f"{display} [text]")
 
@@ -193,7 +196,7 @@ def _build_set_stats_tool(stat_schema: list[dict[str, Any]]) -> dict[str, Any]:
             properties[name] = {
                 "type": "string",
                 "enum": options,
-                "description": f"New state for {display}. Options: {', '.join(options)}",
+                "description": f"New state for {display}{desc_suffix}. Options: {', '.join(options)}",
             }
             stat_labels.append(f"{display} [enum: {', '.join(options)}]")
 

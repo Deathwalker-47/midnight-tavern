@@ -1,40 +1,43 @@
-"""Dungeon Master API endpoints.
-
-All endpoints currently unprotected — auth dependency injection will be
-added when the auth module is complete (Sprint A task 3).
-
-SSE streaming endpoint follows the same pattern that will be used for
-the main chat streaming endpoint.
-"""
+"""Dungeon Master API endpoints."""
 
 import json
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.errors import AppError
 from app.db.session import get_db
+from app.modules.dungeon_master.dice import parse_and_roll
 from app.modules.dungeon_master.models import (
     CharacterSheet,
+    DMConfigAttachment,
     DMRoll,
     DMSession,
+    GameEvent,
     GameRuleset,
 )
 from app.modules.dungeon_master.schemas import (
+    AnswerQuestionRequest,
+    AttachmentResponse,
     CharacterSheetResponse,
+    CreateAttachmentRequest,
     CreateRulesetRequest,
     CreateSessionRequest,
     CreateSheetRequest,
     EvaluateRequest,
+    GameEventListResponse,
+    GameEventResponse,
     RollListResponse,
     RollRequest,
     RollResponse,
+    RollStatsResponse,
     RulesetResponse,
     SessionResponse,
     UpdateRulesetRequest,
@@ -45,8 +48,6 @@ from app.modules.dungeon_master.service import (
     get_or_create_sheet,
     get_session_by_chat,
 )
-from app.modules.dungeon_master.dice import parse_and_roll
-from app.modules.dungeon_master.models import DMRoll
 
 logger = structlog.get_logger(__name__)
 
@@ -66,7 +67,15 @@ async def create_ruleset(
         description=body.description,
         stat_schema=[s.model_dump() for s in body.stat_schema],
         rules_text=body.rules_text,
+        reminder_text=body.reminder_text,
+        instruction=body.instruction,
+        player_guide=body.player_guide,
         recommended_model=body.recommended_model,
+        recommended_provider=body.recommended_provider,
+        dm_temperature=body.dm_temperature,
+        dm_max_tokens=body.dm_max_tokens,
+        context_window=body.context_window,
+        enforcement_config=body.enforcement_config.model_dump(),
         is_public=body.is_public,
     )
     db.add(ruleset)
@@ -80,10 +89,23 @@ async def list_rulesets(
     db: AsyncSession = Depends(get_db),
 ) -> list[RulesetResponse]:
     result = await db.execute(
-        select(GameRuleset).where(GameRuleset.deleted_at.is_(None)).order_by(GameRuleset.created_at.desc())
+        select(GameRuleset)
+        .where(GameRuleset.deleted_at.is_(None))
+        .order_by(GameRuleset.created_at.desc())
     )
-    rulesets = result.scalars().all()
-    return [RulesetResponse.model_validate(r) for r in rulesets]
+    return [RulesetResponse.model_validate(r) for r in result.scalars().all()]
+
+
+@router.get("/rulesets/public", response_model=list[RulesetResponse])
+async def list_public_rulesets(
+    db: AsyncSession = Depends(get_db),
+) -> list[RulesetResponse]:
+    result = await db.execute(
+        select(GameRuleset)
+        .where(GameRuleset.deleted_at.is_(None), GameRuleset.is_public.is_(True))
+        .order_by(GameRuleset.created_at.desc())
+    )
+    return [RulesetResponse.model_validate(r) for r in result.scalars().all()]
 
 
 @router.get("/rulesets/{ruleset_id}", response_model=RulesetResponse)
@@ -127,8 +149,24 @@ async def update_ruleset(
         ruleset.stat_schema = [s.model_dump() for s in body.stat_schema]
     if body.rules_text is not None:
         ruleset.rules_text = body.rules_text
+    if body.reminder_text is not None:
+        ruleset.reminder_text = body.reminder_text
+    if body.instruction is not None:
+        ruleset.instruction = body.instruction
+    if body.player_guide is not None:
+        ruleset.player_guide = body.player_guide
     if body.recommended_model is not None:
         ruleset.recommended_model = body.recommended_model
+    if body.recommended_provider is not None:
+        ruleset.recommended_provider = body.recommended_provider
+    if body.dm_temperature is not None:
+        ruleset.dm_temperature = body.dm_temperature
+    if body.dm_max_tokens is not None:
+        ruleset.dm_max_tokens = body.dm_max_tokens
+    if body.context_window is not None:
+        ruleset.context_window = body.context_window
+    if body.enforcement_config is not None:
+        ruleset.enforcement_config = body.enforcement_config.model_dump()
     if body.is_public is not None:
         ruleset.is_public = body.is_public
 
@@ -142,8 +180,6 @@ async def delete_ruleset(
     ruleset_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    from datetime import datetime, timezone
-
     result = await db.execute(
         select(GameRuleset).where(
             GameRuleset.id == ruleset_id,
@@ -158,6 +194,44 @@ async def delete_ruleset(
     await db.commit()
 
 
+@router.post("/rulesets/{ruleset_id}/duplicate", response_model=RulesetResponse, status_code=status.HTTP_201_CREATED)
+async def duplicate_ruleset(
+    ruleset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> RulesetResponse:
+    result = await db.execute(
+        select(GameRuleset).where(
+            GameRuleset.id == ruleset_id,
+            GameRuleset.deleted_at.is_(None),
+        )
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        raise AppError("Ruleset not found", status_code=404, error_code="ruleset_not_found")
+
+    clone = GameRuleset(
+        name=f"{source.name} (copy)",
+        description=source.description,
+        stat_schema=list(source.stat_schema),
+        rules_text=source.rules_text,
+        reminder_text=source.reminder_text,
+        instruction=source.instruction,
+        player_guide=source.player_guide,
+        recommended_model=source.recommended_model,
+        recommended_provider=source.recommended_provider,
+        dm_temperature=source.dm_temperature,
+        dm_max_tokens=source.dm_max_tokens,
+        context_window=source.context_window,
+        enforcement_config=dict(source.enforcement_config),
+        is_public=False,
+        user_id=source.user_id,
+    )
+    db.add(clone)
+    await db.commit()
+    await db.refresh(clone)
+    return RulesetResponse.model_validate(clone)
+
+
 # ── DM Sessions ───────────────────────────────────────────────────────────────
 
 
@@ -166,7 +240,6 @@ async def create_session(
     body: CreateSessionRequest,
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
-    # Verify ruleset exists
     ruleset_result = await db.execute(
         select(GameRuleset).where(
             GameRuleset.id == body.ruleset_id,
@@ -176,10 +249,8 @@ async def create_session(
     if ruleset_result.scalar_one_or_none() is None:
         raise AppError("Ruleset not found", status_code=404, error_code="ruleset_not_found")
 
-    # Deactivate any existing session for this chat
     existing = await get_session_by_chat(db, body.chat_id)
     if existing:
-        from datetime import datetime, timezone
         existing.deleted_at = datetime.now(timezone.utc)
 
     session = DMSession(chat_id=body.chat_id, ruleset_id=body.ruleset_id)
@@ -205,8 +276,6 @@ async def delete_session(
     session_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    from datetime import datetime, timezone
-
     result = await db.execute(
         select(DMSession).where(
             DMSession.id == session_id,
@@ -232,8 +301,7 @@ async def list_sheets(
     result = await db.execute(
         select(CharacterSheet).where(CharacterSheet.session_id == session_id)
     )
-    sheets = result.scalars().all()
-    return [CharacterSheetResponse.model_validate(s) for s in sheets]
+    return [CharacterSheetResponse.model_validate(s) for s in result.scalars().all()]
 
 
 @router.post("/sessions/{session_id}/sheet", response_model=CharacterSheetResponse, status_code=status.HTTP_201_CREATED)
@@ -255,6 +323,7 @@ async def create_sheet(
         session_id=session_id,
         character_id=body.character_id,
         is_player=body.is_player,
+        is_alive=True,
         display_name=body.display_name,
         stats=body.stats,
         inventory=body.inventory,
@@ -291,6 +360,8 @@ async def update_sheet(
         sheet.skills = body.skills
     if body.display_name is not None:
         sheet.display_name = body.display_name
+    if body.is_alive is not None:
+        sheet.is_alive = body.is_alive
 
     await db.commit()
     await db.refresh(sheet)
@@ -306,7 +377,6 @@ async def manual_roll(
     body: RollRequest,
     db: AsyncSession = Depends(get_db),
 ) -> RollResponse:
-    """Manual dice roll triggered by the player (not the DM agent)."""
     session_result = await db.execute(
         select(DMSession).where(
             DMSession.id == session_id,
@@ -322,6 +392,11 @@ async def manual_roll(
     except ValueError as exc:
         raise AppError(str(exc), status_code=422, error_code="invalid_dice_expression") from exc
 
+    success: bool | None = None
+    if body.dc is not None:
+        success = (result.total + (body.dc or 0)) >= body.dc if body.dc else None
+        success = result.total >= body.dc
+
     roll = DMRoll(
         session_id=session_id,
         dice_expression=result.expression,
@@ -332,6 +407,11 @@ async def manual_roll(
         kept_rolls=result.kept_rolls,
         total=result.total,
         context=body.context,
+        dc=body.dc,
+        success=success,
+        advantage=body.advantage,
+        disadvantage=body.disadvantage,
+        stat_used=body.stat_used,
     )
     db.add(roll)
     await db.commit()
@@ -346,8 +426,6 @@ async def list_rolls(
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ) -> RollListResponse:
-    from sqlalchemy import func
-
     count_result = await db.execute(
         select(func.count()).select_from(DMRoll).where(DMRoll.session_id == session_id)
     )
@@ -360,11 +438,193 @@ async def list_rolls(
         .limit(limit)
         .offset(offset)
     )
-    rolls = result.scalars().all()
     return RollListResponse(
-        rolls=[RollResponse.model_validate(r) for r in rolls],
+        rolls=[RollResponse.model_validate(r) for r in result.scalars().all()],
         total=total,
     )
+
+
+@router.get("/sessions/{session_id}/rolls/stats", response_model=RollStatsResponse)
+async def roll_stats(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> RollStatsResponse:
+    """Aggregate roll statistics for a session."""
+    result = await db.execute(
+        select(
+            func.count(DMRoll.id).label("total"),
+            func.avg(DMRoll.total).label("avg_roll"),
+            func.max(DMRoll.total).label("highest"),
+            func.min(DMRoll.total).label("lowest"),
+        ).where(DMRoll.session_id == session_id)
+    )
+    row = result.one()
+
+    # Nat 20 / Nat 1: count kept_rolls arrays containing a single max/min face value
+    # We check total = 20 with num_dice=1 and faces=20 as a proxy for simplicity
+    nat20_result = await db.execute(
+        select(func.count(DMRoll.id)).where(
+            DMRoll.session_id == session_id,
+            DMRoll.num_dice == 1,
+            DMRoll.dice_faces == "20",
+            DMRoll.total == 20,
+        )
+    )
+    nat1_result = await db.execute(
+        select(func.count(DMRoll.id)).where(
+            DMRoll.session_id == session_id,
+            DMRoll.num_dice == 1,
+            DMRoll.dice_faces == "20",
+            DMRoll.total == 1,
+        )
+    )
+
+    return RollStatsResponse(
+        total_rolls=row.total or 0,
+        nat20_count=nat20_result.scalar_one() or 0,
+        nat1_count=nat1_result.scalar_one() or 0,
+        avg_roll=float(row.avg_roll) if row.avg_roll is not None else None,
+        highest=row.highest,
+        lowest=row.lowest,
+    )
+
+
+# ── Game Events ───────────────────────────────────────────────────────────────
+
+
+@router.get("/sessions/{session_id}/events", response_model=GameEventListResponse)
+async def list_events(
+    session_id: uuid.UUID,
+    limit: int = 20,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+) -> GameEventListResponse:
+    count_result = await db.execute(
+        select(func.count()).select_from(GameEvent).where(GameEvent.session_id == session_id)
+    )
+    total = count_result.scalar_one()
+
+    result = await db.execute(
+        select(GameEvent)
+        .where(GameEvent.session_id == session_id)
+        .order_by(GameEvent.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return GameEventListResponse(
+        events=[GameEventResponse.model_validate(e) for e in result.scalars().all()],
+        total=total,
+    )
+
+
+@router.get("/sessions/{session_id}/events/{event_id}", response_model=GameEventResponse)
+async def get_event(
+    session_id: uuid.UUID,
+    event_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> GameEventResponse:
+    result = await db.execute(
+        select(GameEvent).where(
+            GameEvent.id == event_id,
+            GameEvent.session_id == session_id,
+        )
+    )
+    event = result.scalar_one_or_none()
+    if event is None:
+        raise AppError("Event not found", status_code=404, error_code="event_not_found")
+    return GameEventResponse.model_validate(event)
+
+
+@router.post("/sessions/{session_id}/answer", response_model=GameEventResponse)
+async def answer_question(
+    session_id: uuid.UUID,
+    body: AnswerQuestionRequest,
+    db: AsyncSession = Depends(get_db),
+) -> GameEventResponse:
+    """Store the player's answer to a DM ask_player question."""
+    result = await db.execute(
+        select(GameEvent).where(
+            GameEvent.id == body.event_id,
+            GameEvent.session_id == session_id,
+            GameEvent.ruling == "ask",
+        )
+    )
+    event = result.scalar_one_or_none()
+    if event is None:
+        raise AppError("Pending question not found", status_code=404, error_code="event_not_found")
+
+    event.player_answer = body.answer
+    await db.commit()
+    await db.refresh(event)
+    return GameEventResponse.model_validate(event)
+
+
+# ── DM Config Attachments ─────────────────────────────────────────────────────
+
+
+@router.post("/attachments", response_model=AttachmentResponse, status_code=status.HTTP_201_CREATED)
+async def create_attachment(
+    body: CreateAttachmentRequest,
+    db: AsyncSession = Depends(get_db),
+) -> AttachmentResponse:
+    if body.character_id is None and body.chat_id is None:
+        raise AppError(
+            "Either character_id or chat_id must be provided",
+            status_code=422,
+            error_code="attachment_target_required",
+        )
+    if body.character_id is not None and body.chat_id is not None:
+        raise AppError(
+            "Provide either character_id or chat_id, not both",
+            status_code=422,
+            error_code="attachment_target_exclusive",
+        )
+
+    ruleset_result = await db.execute(
+        select(GameRuleset).where(
+            GameRuleset.id == body.ruleset_id,
+            GameRuleset.deleted_at.is_(None),
+        )
+    )
+    if ruleset_result.scalar_one_or_none() is None:
+        raise AppError("Ruleset not found", status_code=404, error_code="ruleset_not_found")
+
+    attachment = DMConfigAttachment(
+        ruleset_id=body.ruleset_id,
+        character_id=body.character_id,
+        chat_id=body.chat_id,
+        mode=body.mode,
+    )
+    db.add(attachment)
+    await db.commit()
+    await db.refresh(attachment)
+    return AttachmentResponse.model_validate(attachment)
+
+
+@router.get("/attachments", response_model=list[AttachmentResponse])
+async def list_attachments(
+    db: AsyncSession = Depends(get_db),
+) -> list[AttachmentResponse]:
+    result = await db.execute(
+        select(DMConfigAttachment).order_by(DMConfigAttachment.created_at.desc())
+    )
+    return [AttachmentResponse.model_validate(a) for a in result.scalars().all()]
+
+
+@router.delete("/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_attachment(
+    attachment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    result = await db.execute(
+        select(DMConfigAttachment).where(DMConfigAttachment.id == attachment_id)
+    )
+    attachment = result.scalar_one_or_none()
+    if attachment is None:
+        raise AppError("Attachment not found", status_code=404, error_code="attachment_not_found")
+
+    await db.delete(attachment)
+    await db.commit()
 
 
 # ── DM Evaluation (SSE) ───────────────────────────────────────────────────────
@@ -376,18 +636,7 @@ async def evaluate(
     body: EvaluateRequest,
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
-    """Trigger the DM agent to evaluate a player action.
-
-    Returns a Server-Sent Events stream. Event types:
-      dm_thinking       — agent started
-      dm_roll           — dice rolled: {expression, all_rolls, kept_rolls, total, roll_id}
-      dm_stat_update    — stats changed: {character_id, new_stats, death_state}
-      dm_inventory_update — inventory changed: {inventory}
-      dm_skill_update   — skills changed: {skills}
-      dm_reject         — action rejected: {reason}
-      dm_ask            — clarification needed: {question}
-      dm_done           — evaluation complete: DMEvalResult payload
-    """
+    """Trigger the DM agent to evaluate a player action (SSE stream)."""
     result = await db.execute(
         select(DMSession)
         .options(selectinload(DMSession.ruleset))
@@ -420,8 +669,5 @@ async def evaluate(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

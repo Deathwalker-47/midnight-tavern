@@ -1,20 +1,19 @@
 """DM agent service — orchestrates the agentic tool-calling evaluation loop.
 
 Flow per player action:
-  1. Load session + character sheet + ruleset from DB
-  2. Generate DM tools dynamically from stat schema
-  3. Build stripped DM system prompt (last 10 msgs + char sheet + rules)
-  4. Call DM model (cheap/fast) with tools via Anthropic API
-  5. Process tool calls in an agentic loop until terminal action
-  6. Store rolls + actions in DB atomically
-  7. Yield SSE events as each tool call executes
-  8. Return final DMEvalResult as the last event
-
-The system prompt uses prompt caching on the rules_text block (which
-changes infrequently) to reduce latency and cost on repeated evaluations.
+  1. Pre-validate (Python, deterministic) — hard rejects cost zero tokens
+  2. Load session + character sheet + ruleset from DB
+  3. Generate DM tools dynamically from stat schema
+  4. Build system prompt (base + rules_text + reminder_text, all cached)
+  5. Call DM model with tools via Anthropic API
+  6. Process tool calls in an agentic loop until terminal action
+  7. Store rolls + actions + GameEvent in DB atomically
+  8. Yield SSE events as each tool call executes
+  9. Return final DMEvalResult (includes narrative_context for story AI)
 """
 
 import json
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -34,15 +33,71 @@ from app.modules.dungeon_master.models import (
     DMActionType,
     DMRoll,
     DMSession,
+    GameEvent,
 )
+from app.modules.dungeon_master.pre_validator import PreValidationResult, PreValidator
 from app.modules.dungeon_master.schemas import DMEvalResult, DMVerdict, StatChangeSummary
 from app.modules.dungeon_master.tools import build_dm_tools
 from app.modules.dungeon_master.validation import apply_stat_deltas, initialize_stats
 
 logger = structlog.get_logger(__name__)
 
-_MAX_CONTEXT_MESSAGES = 10
 _MAX_TOOL_ITERATIONS = 15
+
+
+# ── Narrative context injector ────────────────────────────────────────────────
+
+
+def build_narrative_context(result: DMEvalResult) -> str:
+    """Build the [DUNGEON MIND RULING] block injected into the narrative AI prompt.
+
+    Returns an empty string for pure pass verdicts with no notable outcomes,
+    so the narrative AI generates freely. For all other verdicts the ruling is
+    authoritative and the narrative AI must reflect it.
+    """
+    if result.verdict == DMVerdict.continue_ and not result.stat_changes and not result.summary:
+        return ""
+
+    lines = ["[DUNGEON MIND RULING — AUTHORITATIVE, DO NOT OVERRIDE]"]
+
+    if result.verdict == DMVerdict.reject:
+        lines.append("Ruling: REJECT")
+        if result.rejection_reason:
+            lines.append(f"Rejection reason: {result.rejection_reason}")
+        lines.append(
+            "Write a narrative where this action FAILS. The character attempts it "
+            "but it does not work. Describe the failure dramatically without mentioning "
+            "dice, stats, or game mechanics."
+        )
+
+    elif result.verdict == DMVerdict.ask:
+        lines.append("Ruling: CLARIFICATION NEEDED")
+        if result.ask_question:
+            lines.append(f"DM question for player: {result.ask_question}")
+        lines.append("Do not advance the story. Have the scene pause, awaiting player input.")
+
+    elif result.verdict == DMVerdict.continue_:
+        lines.append("Ruling: APPROVED")
+        if result.summary:
+            lines.append(f"Mechanical outcome: {result.summary}")
+        if result.narrative_hint:
+            lines.append(f"Context for narration: {result.narrative_hint}")
+        if result.stat_changes:
+            lines.append("Stat changes (show effects narratively, never mention numbers):")
+            for sc in result.stat_changes:
+                lines.append(f"  - {sc.display_name}: {sc.old_value} → {sc.new_value}")
+        if result.death_state:
+            lines.append(
+                "DEATH TRIGGERED: A character has died. Narrate their death dramatically. "
+                "They cannot be revived."
+            )
+
+    lines.append(
+        "Write narrative prose that reflects these outcomes. Do NOT mention dice rolls, "
+        "numbers, stat values, DCs, or game mechanics directly."
+    )
+    lines.append("[END DUNGEON MIND RULING]")
+    return "\n".join(lines)
 
 
 # ── Prompt construction ───────────────────────────────────────────────────────
@@ -53,8 +108,16 @@ def _build_system_prompt_blocks(
     stat_schema: list[dict[str, Any]],
     sheet: CharacterSheet,
     rules_text: str | None,
+    reminder_text: str | None,
+    pre_validation_flags: str = "",
 ) -> list[dict[str, Any]]:
-    """Build system prompt as content blocks with prompt caching on rules."""
+    """Build system prompt as content blocks with prompt caching on rules.
+
+    Three potential cache layers:
+      1. Base prompt (character-specific — not cached)
+      2. rules_text (changes infrequently — cache_control: ephemeral)
+      3. reminder_text (critical rules, injected last — cache_control: ephemeral)
+    """
     stat_lines = "\n".join(
         f"  {name}: {value}" for name, value in (sheet.stats or {}).items()
     )
@@ -64,6 +127,11 @@ def _build_system_prompt_blocks(
     skills_str = (
         ", ".join(f"{k}:{v}" for k, v in (sheet.skills or {}).items()) or "None"
     )
+    alive_str = "ALIVE" if sheet.is_alive else "DEAD — cannot act"
+
+    flags_section = ""
+    if pre_validation_flags:
+        flags_section = f"\n\n## Pre-Validation Flags\n{pre_validation_flags}"
 
     base_prompt = f"""\
 You are the Dungeon Master for a roleplay session using the "{ruleset_name}" ruleset.
@@ -71,7 +139,7 @@ You are the Dungeon Master for a roleplay session using the "{ruleset_name}" rul
 Your role: evaluate the player's latest action for mechanical implications, roll dice when required, update stats/inventory/skills, and enforce game rules. The story AI handles all narrative — you handle ONLY game mechanics.
 
 ## Current Character Sheet
-Character: {sheet.display_name or "Player"}
+Character: {sheet.display_name or "Player"} [{alive_str}]
 Stats:
 {stat_lines or "  (none defined)"}
 Inventory: {inventory_str}
@@ -83,16 +151,22 @@ Skills: {skills_str}
 3. If mechanics apply: roll appropriate dice, apply stat changes, then call submit_results.
 4. For number stats, always use DELTA values (negative = decrease, positive = increase, 0 = reset to initial).
 5. Only update stats that actually changed.
-6. Always end with exactly one terminal action: submit_results, ask_player, or reject_action."""
+6. Always end with exactly one terminal action: submit_results, ask_player, or reject_action.{flags_section}"""
 
     blocks: list[dict[str, Any]] = [{"type": "text", "text": base_prompt}]
 
     if rules_text:
-        # Cache the rules block — it's the largest and changes infrequently.
-        # Appended last to exploit LLM recency bias for rule enforcement.
         blocks.append({
             "type": "text",
             "text": f"\n## Game Rules\n{rules_text}",
+            "cache_control": {"type": "ephemeral"},
+        })
+
+    if reminder_text:
+        # Injected last — benefits from recency bias for critical rule enforcement.
+        blocks.append({
+            "type": "text",
+            "text": f"\n## Critical Reminders (highest priority)\n{reminder_text}",
             "cache_control": {"type": "ephemeral"},
         })
 
@@ -163,6 +237,12 @@ async def _exec_set_stats(
     validation = apply_stat_deltas(stat_schema, sheet.stats or {}, deltas)
 
     sheet.stats = validation.new_stats
+
+    # Set is_alive = False on permadeath (one-way — never reverts via this path)
+    if validation.death_state and sheet.is_alive:
+        enforcement = session.ruleset.enforcement_config or {}
+        if enforcement.get("permadeath", True):
+            sheet.is_alive = False
 
     action_data: dict[str, Any] = {
         "character_id": character_id_str,
@@ -256,15 +336,12 @@ async def evaluate_action(
     recent_messages: list[dict[str, str]],
     player_action: str,
     message_id: uuid.UUID | None = None,
+    pre_validation: PreValidationResult | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """Async generator that drives the DM agent evaluation.
+    """Async generator driving the DM agent evaluation.
 
     Yields SSE-ready event dicts as the DM makes tool calls.
-    The final yielded event is always type "dm_complete" with a DMEvalResult payload.
-
-    Usage:
-        async for event in evaluate_action(...):
-            # event = {"type": "dm_roll", "data": {...}}
+    The final yielded event is always type "dm_done" with a DMEvalResult payload.
     """
     if not settings.ANTHROPIC_API_KEY:
         raise AppError(
@@ -275,13 +352,21 @@ async def evaluate_action(
 
     ruleset = session.ruleset
     model = ruleset.recommended_model or settings.DM_DEFAULT_MODEL
+    context_window = ruleset.context_window or 10
+    max_tokens = ruleset.dm_max_tokens or 2000
     tools = build_dm_tools(ruleset.stat_schema or [])
+
+    pre_flags = pre_validation.flags_for_prompt() if pre_validation else ""
     system_blocks = _build_system_prompt_blocks(
-        ruleset.name, ruleset.stat_schema or [], sheet, ruleset.rules_text
+        ruleset.name,
+        ruleset.stat_schema or [],
+        sheet,
+        ruleset.rules_text,
+        ruleset.reminder_text,
+        pre_flags,
     )
 
-    # Trim to last N messages and append the player's current action
-    context_messages = recent_messages[-_MAX_CONTEXT_MESSAGES:]
+    context_messages = recent_messages[-context_window:]
     messages: list[dict[str, Any]] = [
         *[{"role": m["role"], "content": m["content"]} for m in context_messages],
         {"role": "user", "content": player_action},
@@ -299,22 +384,28 @@ async def evaluate_action(
     narrative_hint: str | None = None
     rejection_reason: str | None = None
     ask_question: str | None = None
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    start_time = time.monotonic()
+    game_event_id: uuid.UUID | None = None
 
     for _iteration in range(_MAX_TOOL_ITERATIONS):
         response = await client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=max_tokens,
             system=system_blocks,
             messages=messages,
             tools=tools,  # type: ignore[arg-type]
         )
 
-        # Append assistant response to message history
+        if hasattr(response, "usage") and response.usage:
+            total_prompt_tokens += getattr(response.usage, "input_tokens", 0)
+            total_completion_tokens += getattr(response.usage, "output_tokens", 0)
+
         messages.append({"role": "assistant", "content": response.content})
 
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         if not tool_uses:
-            # Model finished without a terminal tool — treat as implicit submit
             logger.warning("dm_agent_no_terminal_tool", session_id=str(session.id))
             break
 
@@ -334,17 +425,13 @@ async def evaluate_action(
             elif tool_name == "set_stats":
                 result_data, _ = await _exec_set_stats(db, session, message_id, sheet, tool_input)
                 if result_data.get("applied"):
-                    stat_schema = ruleset.stat_schema or []
-                    schema_map = {s["name"]: s for s in stat_schema}
-                    for change_name in result_data["applied"]:
-                        old_v = (sheet.stats or {}).get(change_name)
-                        new_v = result_data["new_stats"].get(change_name)
+                    for change in result_data.get("changes", []):
                         stat_changes.append(StatChangeSummary(
-                            name=change_name,
-                            display_name=schema_map.get(change_name, {}).get("display_name", change_name),
-                            old_value=old_v,
-                            new_value=new_v,
-                            delta=tool_input.get(change_name),
+                            name=change["name"],
+                            display_name=change.get("display_name", change["name"]),
+                            old_value=change["old_value"],
+                            new_value=change["new_value"],
+                            delta=change.get("delta"),
                         ))
                 if result_data.get("death_state"):
                     death_state = True
@@ -355,6 +442,7 @@ async def evaluate_action(
                         "new_stats": result_data.get("new_stats", {}),
                         "changes": result_data.get("changes", []),
                         "death_state": result_data.get("death_state", False),
+                        "is_alive": sheet.is_alive,
                     },
                 }
 
@@ -418,17 +506,55 @@ async def evaluate_action(
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
-                "content": json.dumps(result_data if tool_name not in ("ask_player", "reject_action") else {"ok": True}),
+                "content": json.dumps(
+                    result_data if tool_name not in ("ask_player", "reject_action") else {"ok": True}
+                ),
             })
 
             if terminal:
                 break
 
         messages.append({"role": "user", "content": tool_results})
-        await db.commit()
 
         if terminal:
+            latency_ms = int((time.monotonic() - start_time) * 1000)
+            ruling_str = (
+                "reject" if verdict == DMVerdict.reject
+                else "ask" if verdict == DMVerdict.ask
+                else ("roll" if roll_ids else "pass")
+            )
+
+            game_event = GameEvent(
+                session_id=session.id,
+                message_id=message_id,
+                player_action=player_action,
+                ruling=ruling_str,
+                ruling_reason=rejection_reason or ask_question,
+                stat_changes=[
+                    {
+                        "name": sc.name,
+                        "display_name": sc.display_name,
+                        "old_value": sc.old_value,
+                        "new_value": sc.new_value,
+                        "delta": sc.delta,
+                    }
+                    for sc in stat_changes
+                ],
+                dm_model_used=model,
+                dm_prompt_tokens=total_prompt_tokens,
+                dm_completion_tokens=total_completion_tokens,
+                dm_latency_ms=latency_ms,
+                pre_validation=pre_validation.to_dict() if pre_validation else None,
+                question_text=ask_question,
+                summary=summary,
+            )
+            db.add(game_event)
+            await db.flush()
+            game_event_id = game_event.id
+            await db.commit()
             break
+
+        await db.commit()
 
     eval_result = DMEvalResult(
         verdict=verdict,
@@ -439,7 +565,9 @@ async def evaluate_action(
         stat_changes=stat_changes,
         roll_ids=roll_ids,
         death_state=death_state,
+        game_event_id=game_event_id,
     )
+    eval_result.narrative_context = build_narrative_context(eval_result)
 
     yield {"type": "dm_done", "data": eval_result.model_dump(mode="json")}
 
@@ -480,6 +608,7 @@ async def get_or_create_sheet(
             session_id=session.id,
             character_id=character_id,
             is_player=True,
+            is_alive=True,
             display_name=display_name,
             stats=initial_stats,
             inventory=[],
