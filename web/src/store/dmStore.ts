@@ -4,7 +4,7 @@
  */
 
 import { create } from "zustand";
-import { dmApi } from "../api/dm";
+import { dmApi, type SpellEntry } from "../api/dm";
 
 export interface StatChange {
   name: string;
@@ -46,6 +46,8 @@ export interface DMSessionState {
   stats: Record<string, number | string>;
   inventory: string[];
   skills: Record<string, number | string>;
+  spells: SpellEntry[];
+  description: string | null;
   isAlive: boolean;
 
   // Roll history (most recent first, capped at 50)
@@ -66,6 +68,8 @@ interface DMActions {
   updateStats: (newStats: Record<string, number | string>) => void;
   updateInventory: (items: string[]) => void;
   updateSkills: (skills: Record<string, number | string>) => void;
+  updateSpells: (spells: SpellEntry[]) => void;
+  setDescription: (description: string | null) => void;
   setIsAlive: (value: boolean) => void;
   addRoll: (roll: DMRoll) => void;
   setEvaluating: (value: boolean) => void;
@@ -85,6 +89,8 @@ const initialState: DMSessionState = {
   stats: {},
   inventory: [],
   skills: {},
+  spells: [],
+  description: null,
   isAlive: true,
   rolls: [],
   isEvaluating: false,
@@ -108,6 +114,10 @@ export const useDMStore = create<DMSessionState & DMActions>((set) => ({
   updateInventory: (items) => set({ inventory: items }),
 
   updateSkills: (skills) => set({ skills }),
+
+  updateSpells: (spells) => set({ spells }),
+
+  setDescription: (description) => set({ description }),
 
   setIsAlive: (value) => set({ isAlive: value }),
 
@@ -195,6 +205,18 @@ export function handleDMEvent(
     case "dm_skill_update":
       if (data.skills) {
         store.updateSkills(data.skills as Record<string, number | string>);
+      }
+      break;
+
+    case "dm_spell_update":
+      if (data.spells) {
+        store.updateSpells(data.spells as SpellEntry[]);
+      }
+      break;
+
+    case "dm_description_update":
+      if (data.description !== undefined) {
+        store.setDescription(data.description as string | null);
       }
       break;
 

@@ -42,6 +42,7 @@ from app.modules.dungeon_master.service import (
     evaluate_action,
     get_or_create_sheet,
     get_session_by_chat,
+    inject_narrative_context,
 )
 from app.modules.dungeon_master.schemas import DMVerdict
 from app.modules.dungeon_master.pre_validator import PreValidator
@@ -245,13 +246,16 @@ async def send_message(
             if m.role in (MessageRole.user, MessageRole.character)
         ]
 
-        # Build system prompt
+        # Build system prompt — LLM-aware DM ruling injection (§1.3)
         system_parts = [character.system_prompt or f"You are {character.name}."]
         if character.personality:
             system_parts.append(f"\nPersonality: {character.personality}")
-        if narrative_hint:
-            # narrative_hint now carries the full [DUNGEON MIND RULING] block
-            system_parts.append(f"\n{narrative_hint}")
+        # Route narrative context to system prompt (Anthropic) or user message (others)
+        extra_system, provider_messages = inject_narrative_context(
+            narrative_hint or "", provider_messages, story_provider="anthropic"
+        )
+        if extra_system:
+            system_parts.append(f"\n{extra_system}")
         system = "\n".join(system_parts)
 
         full_response = ""

@@ -121,6 +121,8 @@ export function ChatPage() {
               store.updateStats(sheets[0].stats as Record<string, number | string>);
               store.updateInventory(sheets[0].inventory);
               store.updateSkills(sheets[0].skills as Record<string, number | string>);
+              store.updateSpells(sheets[0].spells ?? []);
+              store.setDescription(sheets[0].description ?? null);
               store.setIsAlive(sheets[0].is_alive);
             }
           }

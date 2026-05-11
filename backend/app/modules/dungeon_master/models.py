@@ -27,6 +27,8 @@ class DMActionType(str, PyEnum):
     stat_update = "stat_update"
     inventory_update = "inventory_update"
     skill_update = "skill_update"
+    spell_update = "spell_update"
+    description_update = "description_update"
     submit = "submit"
     ask_player = "ask_player"
     reject = "reject"
@@ -100,9 +102,11 @@ class CharacterSheet(Base):
     is_player: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_alive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     stats: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     inventory: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     skills: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    spells: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

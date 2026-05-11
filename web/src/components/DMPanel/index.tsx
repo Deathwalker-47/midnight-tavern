@@ -32,6 +32,8 @@ export function DMPanel({ statSchema }: Props) {
     stats,
     inventory,
     skills,
+    spells,
+    description,
     rolls,
     isEvaluating,
     isAlive,
@@ -123,6 +125,8 @@ export function DMPanel({ statSchema }: Props) {
               <CharacterSheet
                 stats={stats}
                 schema={statSchema}
+                description={description}
+                spells={spells}
                 deathState={deathState}
                 isAlive={isAlive}
               />

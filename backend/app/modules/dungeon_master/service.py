@@ -10,6 +10,15 @@ Flow per player action:
   7. Store rolls + actions + GameEvent in DB atomically
   8. Yield SSE events as each tool call executes
   9. Return final DMEvalResult (includes narrative_context for story AI)
+
+Game engine reference lessons applied:
+  - absolute_values in set_stats for character creation / level-up (§3.3)
+  - set_spells tool with add/remove/update actions (§3.5)
+  - set_description tool — anti-drift identity anchor sent to story AI (§3.4)
+  - verify_death_legitimate() — DM model cannot fabricate deaths at 30+ HP (§5.2)
+  - Character description injected into story AI narrative context (§3.4)
+  - Built-in enforcement checklist appended LAST in system prompt (§9)
+  - LLM-aware injection routing: Claude → system prompt, other → user message (§1.3)
 """
 
 import json
@@ -38,7 +47,11 @@ from app.modules.dungeon_master.models import (
 from app.modules.dungeon_master.pre_validator import PreValidationResult, PreValidator
 from app.modules.dungeon_master.schemas import DMEvalResult, DMVerdict, StatChangeSummary
 from app.modules.dungeon_master.tools import build_dm_tools
-from app.modules.dungeon_master.validation import apply_stat_deltas, initialize_stats
+from app.modules.dungeon_master.validation import (
+    apply_stat_deltas,
+    initialize_stats,
+    verify_death_legitimate,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -48,14 +61,23 @@ _MAX_TOOL_ITERATIONS = 15
 # ── Narrative context injector ────────────────────────────────────────────────
 
 
-def build_narrative_context(result: DMEvalResult) -> str:
+def build_narrative_context(result: DMEvalResult, character_description: str | None = None) -> str:
     """Build the [DUNGEON MIND RULING] block injected into the narrative AI prompt.
 
     Returns an empty string for pure pass verdicts with no notable outcomes,
     so the narrative AI generates freely. For all other verdicts the ruling is
     authoritative and the narrative AI must reflect it.
+
+    character_description (§3.4): if set, appended as an identity anchor that
+    prevents character drift across long sessions.
     """
     if result.verdict == DMVerdict.continue_ and not result.stat_changes and not result.summary:
+        # Even on a clean pass, still inject description if present
+        if character_description:
+            return (
+                f"[CHARACTER IDENTITY — maintain consistently]\n{character_description}\n"
+                "[END CHARACTER IDENTITY]"
+            )
         return ""
 
     lines = ["[DUNGEON MIND RULING — AUTHORITATIVE, DO NOT OVERRIDE]"]
@@ -97,10 +119,82 @@ def build_narrative_context(result: DMEvalResult) -> str:
         "numbers, stat values, DCs, or game mechanics directly."
     )
     lines.append("[END DUNGEON MIND RULING]")
+
+    # Anti-drift: inject description after ruling block (§3.4)
+    if character_description:
+        lines.append(f"\n[CHARACTER IDENTITY — maintain consistently]\n{character_description}\n[END CHARACTER IDENTITY]")
+
     return "\n".join(lines)
 
 
+def inject_narrative_context(
+    narrative_context: str,
+    provider_messages: list[dict[str, Any]],
+    story_provider: str = "anthropic",
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """LLM-aware injection router (§1.3).
+
+    Claude (Anthropic): inject into system prompt — returned as extra_system_text.
+    Other providers (Gemini, GPT): inject into the last user message content.
+
+    Returns (extra_system_text | None, modified_messages).
+    """
+    if not narrative_context:
+        return None, provider_messages
+
+    if story_provider == "anthropic":
+        # System prompt injection — returned to caller to append to system
+        return narrative_context, provider_messages
+    else:
+        # User message injection for Gemini / GPT
+        msgs = [m.copy() for m in provider_messages]
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "user":
+                msgs[i] = dict(msgs[i])
+                msgs[i]["content"] = f"{msgs[i]['content']}\n\n{narrative_context}"
+                break
+        return None, msgs
+
+
 # ── Prompt construction ───────────────────────────────────────────────────────
+
+
+def _build_enforcement_checklist(enforcement: dict[str, Any]) -> str:
+    """Build a minimal mandatory checklist based on active enforcement config.
+
+    Goes at the VERY END of the system prompt for maximum model attention (§9).
+    """
+    items = [
+        "✓ Only update stats that ACTUALLY changed in this action.",
+        "✓ Use DELTA values for stat changes, not absolute values (except in absolute_values dict).",
+        "✓ Always end with exactly ONE terminal action: submit_results, ask_player, or reject_action.",
+    ]
+    if enforcement.get("permadeath", True):
+        items.append(
+            "✓ Death (is_alive=False) is ONLY valid when HP is at or below minimum. "
+            "NEVER invent kill mechanics. HP > 0 = alive, no exceptions."
+        )
+    if enforcement.get("dead_cannot_act", True):
+        items.append("✓ Dead characters CANNOT act. Reject any action from a dead character.")
+    if enforcement.get("no_invented_powers", True):
+        items.append(
+            "✓ NEVER grant skills, spells, or feats not earned through level-up or rules. "
+            "If you find yourself adding an ability mid-scene: STOP and reject instead."
+        )
+    if enforcement.get("resource_costs_enforced", True):
+        items.append(
+            "✓ Always deduct MP/resource costs when abilities are used. "
+            "Always send stat_changes for currency — NEVER mention gold/silver without a stat_change."
+        )
+    if enforcement.get("require_skill_for_ability", True):
+        items.append("✓ Reject abilities the character has not learned (not in their skill/spell list).")
+    items.append(
+        "✓ Use set_spells for spells, set_skills for skills. NEVER put a spell in set_skills or vice versa."
+    )
+    items.append(
+        "✓ Use set_description whenever the character's appearance changes (new equipment, wounds, transformation)."
+    )
+    return "\n".join(f"  {item}" for item in items)
 
 
 def _build_system_prompt_blocks(
@@ -109,6 +203,7 @@ def _build_system_prompt_blocks(
     sheet: CharacterSheet,
     rules_text: str | None,
     reminder_text: str | None,
+    enforcement_config: dict[str, Any],
     pre_validation_flags: str = "",
 ) -> list[dict[str, Any]]:
     """Build system prompt as content blocks with prompt caching on rules.
@@ -116,7 +211,10 @@ def _build_system_prompt_blocks(
     Three potential cache layers:
       1. Base prompt (character-specific — not cached)
       2. rules_text (changes infrequently — cache_control: ephemeral)
-      3. reminder_text (critical rules, injected last — cache_control: ephemeral)
+      3. reminder_text + mandatory checklist (injected last — cache_control: ephemeral)
+
+    Per §9 of the game engine reference: the MANDATORY CHECKLIST goes at the
+    very end because LLMs pay highest attention to the end of their context.
     """
     stat_lines = "\n".join(
         f"  {name}: {value}" for name, value in (sheet.stats or {}).items()
@@ -127,7 +225,17 @@ def _build_system_prompt_blocks(
     skills_str = (
         ", ".join(f"{k}:{v}" for k, v in (sheet.skills or {}).items()) or "None"
     )
+    spells_str = "None"
+    if sheet.spells:
+        spells_str = ", ".join(
+            f"{s['name']} (C{s.get('circle', '?')})" if isinstance(s, dict) else str(s)
+            for s in sheet.spells
+        )
+
     alive_str = "ALIVE" if sheet.is_alive else "DEAD — cannot act"
+    description_section = ""
+    if sheet.description:
+        description_section = f"\nDescription: {sheet.description}"
 
     flags_section = ""
     if pre_validation_flags:
@@ -136,22 +244,25 @@ def _build_system_prompt_blocks(
     base_prompt = f"""\
 You are the Dungeon Master for a roleplay session using the "{ruleset_name}" ruleset.
 
-Your role: evaluate the player's latest action for mechanical implications, roll dice when required, update stats/inventory/skills, and enforce game rules. The story AI handles all narrative — you handle ONLY game mechanics.
+Your role: evaluate the player's latest action for mechanical implications, roll dice when required, update stats/inventory/skills/spells, and enforce game rules. The story AI handles all narrative — you handle ONLY game mechanics.
 
 ## Current Character Sheet
-Character: {sheet.display_name or "Player"} [{alive_str}]
+Character: {sheet.display_name or "Player"} [{alive_str}]{description_section}
 Stats:
 {stat_lines or "  (none defined)"}
 Inventory: {inventory_str}
 Skills: {skills_str}
+Spells: {spells_str}
 
 ## Instructions
 1. Determine whether the player's action requires a mechanical resolution.
 2. If no mechanics apply, call submit_results immediately with an empty narrative_hint.
 3. If mechanics apply: roll appropriate dice, apply stat changes, then call submit_results.
-4. For number stats, always use DELTA values (negative = decrease, positive = increase, 0 = reset to initial).
-5. Only update stats that actually changed.
-6. Always end with exactly one terminal action: submit_results, ask_player, or reject_action.{flags_section}"""
+4. For number stats, use DELTA values (negative = decrease, positive = increase, 0 = reset to initial).
+5. Use absolute_values in set_stats ONLY for character creation or level-up base increases.
+6. Use set_spells (NOT set_skills) for spells. Use set_description when appearance changes.
+7. Only update stats that actually changed.
+8. Always end with exactly one terminal action: submit_results, ask_player, or reject_action.{flags_section}"""
 
     blocks: list[dict[str, Any]] = [{"type": "text", "text": base_prompt}]
 
@@ -162,13 +273,18 @@ Skills: {skills_str}
             "cache_control": {"type": "ephemeral"},
         })
 
+    # Build the final cached block: reminder_text + mandatory checklist
+    # Checklist goes LAST for maximum model attention (§9)
+    checklist = _build_enforcement_checklist(enforcement_config)
+    final_block_parts = []
     if reminder_text:
-        # Injected last — benefits from recency bias for critical rule enforcement.
-        blocks.append({
-            "type": "text",
-            "text": f"\n## Critical Reminders (highest priority)\n{reminder_text}",
-            "cache_control": {"type": "ephemeral"},
-        })
+        final_block_parts.append(f"## Critical Reminders\n{reminder_text}")
+    final_block_parts.append(f"## MANDATORY CHECKLIST (verify before every terminal action)\n{checklist}")
+    blocks.append({
+        "type": "text",
+        "text": "\n\n".join(final_block_parts),
+        "cache_control": {"type": "ephemeral"},
+    })
 
     return blocks
 
@@ -231,24 +347,46 @@ async def _exec_set_stats(
 ) -> tuple[dict[str, Any], bool]:
     character_id_str = tool_input.get("character_id", "")
     context = tool_input.get("context", "")
-    deltas = {k: v for k, v in tool_input.items() if k not in ("character_id", "context")}
+    absolute_values = tool_input.get("absolute_values") or {}
+    deltas = {
+        k: v for k, v in tool_input.items()
+        if k not in ("character_id", "context", "absolute_values")
+    }
 
     stat_schema: list[dict[str, Any]] = session.ruleset.stat_schema or []
-    validation = apply_stat_deltas(stat_schema, sheet.stats or {}, deltas)
+    validation = apply_stat_deltas(
+        stat_schema, sheet.stats or {}, deltas, absolute_values=absolute_values
+    )
 
     sheet.stats = validation.new_stats
 
-    # Set is_alive = False on permadeath (one-way — never reverts via this path)
+    # HP verification before permadeath (§5.2): DM cannot fabricate deaths at 30+ HP
     if validation.death_state and sheet.is_alive:
         enforcement = session.ruleset.enforcement_config or {}
         if enforcement.get("permadeath", True):
-            sheet.is_alive = False
+            # Double-check: verify at least one HP stat is actually at/below minimum
+            if verify_death_legitimate(stat_schema, validation.new_stats):
+                sheet.is_alive = False
+            else:
+                # Death state was triggered but HP never actually hit 0 — override
+                validation.death_state = False
+                logger.warning(
+                    "dm_death_rejected_hp_positive",
+                    session_id=str(session.id),
+                    stats=validation.new_stats,
+                )
 
     action_data: dict[str, Any] = {
         "character_id": character_id_str,
         "context": context,
         "changes": [
-            {"name": c.name, "old": c.old_value, "new": c.new_value, "delta": c.delta}
+            {
+                "name": c.name,
+                "old": c.old_value,
+                "new": c.new_value,
+                "delta": c.delta,
+                "absolute": c.was_absolute,
+            }
             for c in validation.changes
         ],
         "death_state": validation.death_state,
@@ -326,6 +464,80 @@ async def _exec_set_skills(
     return {"skills": updated}, False
 
 
+async def _exec_set_spells(
+    db: AsyncSession,
+    session: DMSession,
+    message_id: uuid.UUID | None,
+    sheet: CharacterSheet,
+    tool_input: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Handle add / remove / update spell actions (§3.5).
+
+    Spells are stored as a list of dicts: [{name, circle, mp_cost, prepared, ...}].
+    """
+    action = tool_input.get("action", "add")
+    incoming = tool_input.get("spells", [])
+    context = tool_input.get("context", "")
+    current: list[dict[str, Any]] = list(sheet.spells or [])
+
+    if action == "add":
+        existing_names = {s["name"] for s in current if isinstance(s, dict)}
+        for spell in incoming:
+            if isinstance(spell, dict) and spell.get("name") not in existing_names:
+                current.append(spell)
+                existing_names.add(spell["name"])
+            elif isinstance(spell, dict):
+                # Update existing (treat add as upsert)
+                for i, s in enumerate(current):
+                    if isinstance(s, dict) and s["name"] == spell["name"]:
+                        current[i] = {**s, **spell}
+                        break
+
+    elif action == "remove":
+        remove_names = {s["name"] for s in incoming if isinstance(s, dict)}
+        current = [s for s in current if not (isinstance(s, dict) and s.get("name") in remove_names)]
+
+    elif action == "update":
+        for spell in incoming:
+            if not isinstance(spell, dict) or not spell.get("name"):
+                continue
+            for i, s in enumerate(current):
+                if isinstance(s, dict) and s.get("name") == spell["name"]:
+                    current[i] = {**s, **spell}
+                    break
+
+    sheet.spells = current
+    db.add(DMAction(
+        session_id=session.id,
+        message_id=message_id,
+        action_type=DMActionType.spell_update,
+        action_data={"context": context, "action": action, "spells": incoming},
+    ))
+    await db.flush()
+    return {"spells": current, "action": action}, False
+
+
+async def _exec_set_description(
+    db: AsyncSession,
+    session: DMSession,
+    message_id: uuid.UUID | None,
+    sheet: CharacterSheet,
+    tool_input: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Update character description — anti-drift anchor (§3.4)."""
+    description = tool_input.get("description", "")
+    context = tool_input.get("context", "")
+    sheet.description = description
+    db.add(DMAction(
+        session_id=session.id,
+        message_id=message_id,
+        action_type=DMActionType.description_update,
+        action_data={"context": context, "description": description},
+    ))
+    await db.flush()
+    return {"description": description}, False
+
+
 # ── Main evaluation loop ──────────────────────────────────────────────────────
 
 
@@ -354,6 +566,7 @@ async def evaluate_action(
     model = ruleset.recommended_model or settings.DM_DEFAULT_MODEL
     context_window = ruleset.context_window or 10
     max_tokens = ruleset.dm_max_tokens or 2000
+    enforcement = ruleset.enforcement_config or {}
     tools = build_dm_tools(ruleset.stat_schema or [])
 
     pre_flags = pre_validation.flags_for_prompt() if pre_validation else ""
@@ -363,6 +576,7 @@ async def evaluate_action(
         sheet,
         ruleset.rules_text,
         ruleset.reminder_text,
+        enforcement,
         pre_flags,
     )
 
@@ -378,6 +592,7 @@ async def evaluate_action(
 
     roll_ids: list[uuid.UUID] = []
     stat_changes: list[StatChangeSummary] = []
+    spell_changes: list[dict[str, Any]] = []
     death_state = False
     verdict = DMVerdict.continue_
     summary: str | None = None
@@ -415,6 +630,7 @@ async def evaluate_action(
         for block in tool_uses:
             tool_name: str = block.name
             tool_input: dict[str, Any] = block.input  # type: ignore[assignment]
+            result_data: dict[str, Any] = {}
 
             if tool_name == "roll_dice":
                 result_data, _ = await _exec_roll_dice(db, session, message_id, tool_input)
@@ -453,6 +669,19 @@ async def evaluate_action(
             elif tool_name == "set_skills":
                 result_data, _ = await _exec_set_skills(db, session, message_id, sheet, tool_input)
                 yield {"type": "dm_skill_update", "data": result_data}
+
+            elif tool_name == "set_spells":
+                result_data, _ = await _exec_set_spells(db, session, message_id, sheet, tool_input)
+                if "spells" in result_data:
+                    spell_changes.append({
+                        "action": tool_input.get("action"),
+                        "spells": tool_input.get("spells", []),
+                    })
+                yield {"type": "dm_spell_update", "data": result_data}
+
+            elif tool_name == "set_description":
+                result_data, _ = await _exec_set_description(db, session, message_id, sheet, tool_input)
+                yield {"type": "dm_description_update", "data": result_data}
 
             elif tool_name == "submit_results":
                 summary = tool_input.get("summary")
@@ -567,7 +796,10 @@ async def evaluate_action(
         death_state=death_state,
         game_event_id=game_event_id,
     )
-    eval_result.narrative_context = build_narrative_context(eval_result)
+    # Build narrative context including character description for anti-drift (§3.4)
+    eval_result.narrative_context = build_narrative_context(
+        eval_result, character_description=sheet.description
+    )
 
     yield {"type": "dm_done", "data": eval_result.model_dump(mode="json")}
 
@@ -613,6 +845,7 @@ async def get_or_create_sheet(
             stats=initial_stats,
             inventory=[],
             skills={},
+            spells=[],
         )
         db.add(sheet)
         await db.flush()

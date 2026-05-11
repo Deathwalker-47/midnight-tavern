@@ -130,9 +130,11 @@ class CharacterSheetResponse(BaseModel):
     is_player: bool
     is_alive: bool
     display_name: str | None
+    description: str | None
     stats: dict[str, Any]
     inventory: list[Any]
     skills: dict[str, Any]
+    spells: list[Any]
     updated_at: datetime
 
     model_config = {"from_attributes": True}
@@ -142,7 +144,9 @@ class UpdateSheetRequest(BaseModel):
     stats: dict[str, Any] | None = None
     inventory: list[Any] | None = None
     skills: dict[str, Any] | None = None
+    spells: list[Any] | None = None
     display_name: str | None = None
+    description: str | None = None
     is_alive: bool | None = None
 
 
@@ -150,9 +154,11 @@ class CreateSheetRequest(BaseModel):
     character_id: uuid.UUID | None = None
     is_player: bool = True
     display_name: str | None = None
+    description: str | None = None
     stats: dict[str, Any] = Field(default_factory=dict)
     inventory: list[Any] = Field(default_factory=list)
     skills: dict[str, Any] = Field(default_factory=dict)
+    spells: list[Any] = Field(default_factory=list)
 
 
 # ── Dice Rolls ────────────────────────────────────────────────────────────────

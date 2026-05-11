@@ -58,15 +58,26 @@ export interface DMSession {
   created_at: string;
 }
 
+export interface SpellEntry {
+  name: string;
+  circle?: number;
+  mp_cost?: number;
+  prepared?: boolean;
+  element?: string;
+  source?: string;
+}
+
 export interface CharacterSheet {
   id: string;
   session_id: string;
   character_id: string | null;
   is_player: boolean;
   display_name: string | null;
+  description: string | null;
   stats: Record<string, number | string>;
   inventory: string[];
   skills: Record<string, number | string>;
+  spells: SpellEntry[];
   is_alive: boolean;
   updated_at: string;
 }
@@ -210,7 +221,7 @@ export const dmApi = {
   updateSheet: (
     sessionId: string,
     sheetId: string,
-    body: Partial<Pick<CharacterSheet, "stats" | "inventory" | "skills" | "display_name" | "is_alive">>,
+    body: Partial<Pick<CharacterSheet, "stats" | "inventory" | "skills" | "spells" | "display_name" | "description" | "is_alive">>,
   ) =>
     apiFetch<CharacterSheet>(`${BASE}/sessions/${sessionId}/sheet/${sheetId}`, {
       method: "PATCH",
