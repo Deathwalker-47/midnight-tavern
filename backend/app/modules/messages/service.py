@@ -36,18 +36,18 @@ async def list_messages(
     limit: int = 50,
     before_id: uuid.UUID | None = None,
 ) -> tuple[list[Message], int]:
-    count_q = select(func.count()).select_from(Message).where(
-        Message.chat_id == chat_id
-    )
-    total = (await db.execute(count_q)).scalar_one()
+    where_clauses = [Message.chat_id == chat_id]
 
-    q = select(Message).where(Message.chat_id == chat_id)
     if before_id:
         anchor = await db.get(Message, before_id)
         if anchor:
-            q = q.where(Message.created_at < anchor.created_at)
-    q = q.order_by(Message.created_at.desc()).limit(limit)
+            where_clauses.append(Message.created_at < anchor.created_at)
 
+    # Count only the rows that match the anchor filter so has_more is accurate
+    count_q = select(func.count()).select_from(Message).where(*where_clauses)
+    total = (await db.execute(count_q)).scalar_one()
+
+    q = select(Message).where(*where_clauses).order_by(Message.created_at.desc()).limit(limit)
     result = await db.execute(q)
     msgs = list(reversed(result.scalars().all()))
     return msgs, total
@@ -59,7 +59,7 @@ async def get_recent_messages(
     result = await db.execute(
         select(Message)
         .where(Message.chat_id == chat_id)
-        .order_by(Message.created_at.asc())
+        .order_by(Message.created_at.desc())
         .limit(limit)
     )
-    return list(result.scalars().all())
+    return list(reversed(result.scalars().all()))

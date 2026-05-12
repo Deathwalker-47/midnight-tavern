@@ -253,7 +253,7 @@ export function ChatPage() {
               metadata_: null,
               created_at: new Date().toISOString(),
             };
-            setMessages((prev) => [...prev.filter((m) => m.id !== tempMsg.id), finalMsg]);
+            setMessages((prev) => [...prev.filter((m) => m.id !== tempMsg.id), tempMsg, finalMsg]);
             setStreamingText("");
 
             // Associate pending DM data with this assistant message
