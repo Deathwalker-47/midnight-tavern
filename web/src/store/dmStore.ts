@@ -4,6 +4,7 @@
  */
 
 import { create } from "zustand";
+import { dmApi, type SpellEntry } from "../api/dm";
 
 export interface StatChange {
   name: string;
@@ -33,6 +34,7 @@ export interface DMEvalResult {
   statChanges: StatChange[];
   rollIds: string[];
   deathState: boolean;
+  gameEventId: string | null;
 }
 
 export interface DMSessionState {
@@ -44,6 +46,9 @@ export interface DMSessionState {
   stats: Record<string, number | string>;
   inventory: string[];
   skills: Record<string, number | string>;
+  spells: SpellEntry[];
+  description: string | null;
+  isAlive: boolean;
 
   // Roll history (most recent first, capped at 50)
   rolls: DMRoll[];
@@ -51,6 +56,7 @@ export interface DMSessionState {
   // Current evaluation state
   isEvaluating: boolean;
   pendingQuestion: string | null;
+  pendingEventId: string | null;
   lastRejection: string | null;
   lastResult: DMEvalResult | null;
   deathState: boolean;
@@ -62,13 +68,18 @@ interface DMActions {
   updateStats: (newStats: Record<string, number | string>) => void;
   updateInventory: (items: string[]) => void;
   updateSkills: (skills: Record<string, number | string>) => void;
+  updateSpells: (spells: SpellEntry[]) => void;
+  setDescription: (description: string | null) => void;
+  setIsAlive: (value: boolean) => void;
   addRoll: (roll: DMRoll) => void;
   setEvaluating: (value: boolean) => void;
   setPendingQuestion: (question: string | null) => void;
+  setPendingEventId: (id: string | null) => void;
   setLastRejection: (reason: string | null) => void;
   setLastResult: (result: DMEvalResult) => void;
   setDeathState: (value: boolean) => void;
   clearEvalState: () => void;
+  answerQuestion: (sessionId: string, eventId: string, answer: string) => Promise<void>;
 }
 
 const initialState: DMSessionState = {
@@ -78,9 +89,13 @@ const initialState: DMSessionState = {
   stats: {},
   inventory: [],
   skills: {},
+  spells: [],
+  description: null,
+  isAlive: true,
   rolls: [],
   isEvaluating: false,
   pendingQuestion: null,
+  pendingEventId: null,
   lastRejection: null,
   lastResult: null,
   deathState: false,
@@ -100,6 +115,12 @@ export const useDMStore = create<DMSessionState & DMActions>((set) => ({
 
   updateSkills: (skills) => set({ skills }),
 
+  updateSpells: (spells) => set({ spells }),
+
+  setDescription: (description) => set({ description }),
+
+  setIsAlive: (value) => set({ isAlive: value }),
+
   addRoll: (roll) =>
     set((state) => ({
       rolls: [roll, ...state.rolls].slice(0, 50),
@@ -108,6 +129,8 @@ export const useDMStore = create<DMSessionState & DMActions>((set) => ({
   setEvaluating: (value) => set({ isEvaluating: value }),
 
   setPendingQuestion: (question) => set({ pendingQuestion: question }),
+
+  setPendingEventId: (id) => set({ pendingEventId: id }),
 
   setLastRejection: (reason) => set({ lastRejection: reason }),
 
@@ -125,6 +148,11 @@ export const useDMStore = create<DMSessionState & DMActions>((set) => ({
       pendingQuestion: null,
       lastRejection: null,
     }),
+
+  answerQuestion: async (sessionId, eventId, answer) => {
+    await dmApi.answerQuestion(sessionId, eventId, answer);
+    set({ pendingQuestion: null, pendingEventId: null });
+  },
 }));
 
 // ── SSE event handler ─────────────────────────────────────────────────────────
@@ -164,6 +192,7 @@ export function handleDMEvent(
       }
       if (data.death_state) {
         store.setDeathState(true);
+        store.setIsAlive(false);
       }
       break;
 
@@ -179,6 +208,18 @@ export function handleDMEvent(
       }
       break;
 
+    case "dm_spell_update":
+      if (data.spells) {
+        store.updateSpells(data.spells as SpellEntry[]);
+      }
+      break;
+
+    case "dm_description_update":
+      if (data.description !== undefined) {
+        store.setDescription(data.description as string | null);
+      }
+      break;
+
     case "dm_reject":
       store.setLastRejection(data.reason as string);
       store.setEvaluating(false);
@@ -189,9 +230,39 @@ export function handleDMEvent(
       store.setEvaluating(false);
       break;
 
-    case "dm_done":
-      store.setLastResult(data as unknown as DMEvalResult);
+    case "dm_done": {
+      // Map snake_case backend fields → camelCase frontend types
+      const rawChanges = (
+        data.stat_changes as Array<{
+          name: string;
+          display_name: string;
+          old_value: number | string;
+          new_value: number | string;
+          delta: number | null;
+        }>
+      ) ?? [];
+      const statChanges: StatChange[] = rawChanges.map((c) => ({
+        name: c.name,
+        displayName: c.display_name,
+        oldValue: c.old_value,
+        newValue: c.new_value,
+        delta: c.delta,
+      }));
+      const result: DMEvalResult = {
+        verdict: data.verdict as "continue" | "reject" | "ask",
+        summary: data.summary as string | undefined,
+        rejectionReason: data.rejection_reason as string | undefined,
+        statChanges,
+        rollIds: (data.roll_ids as string[]) ?? [],
+        deathState: (data.death_state as boolean) ?? false,
+        gameEventId: (data.game_event_id as string) ?? null,
+      };
+      store.setLastResult(result);
+      if (result.verdict === "ask" && result.gameEventId) {
+        store.setPendingEventId(result.gameEventId);
+      }
       store.setEvaluating(false);
       break;
+    }
   }
 }

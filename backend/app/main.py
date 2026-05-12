@@ -16,10 +16,13 @@ from app.core.middleware import RequestIDMiddleware
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan context manager for startup/shutdown."""
-    # Startup
     setup_logging()
+    from app.db.session import engine
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
     yield
-    # Shutdown
+    await engine.dispose()
 
 
 def create_app() -> FastAPI:
