@@ -27,6 +27,30 @@ class Settings(BaseSettings):
     FAL_API_KEY: str | None = None
     TOGETHER_API_KEY: str | None = None
 
+    # Phase 1 hardening: per-provider total budget incl. polling, request-level cache.
+    IMAGE_PROVIDER_TIMEOUT_S: int = 60
+    IMAGE_REQUEST_CACHE_BACKEND: str = "auto"  # auto = redis if REDIS_URL else memory
+    IMAGE_REQUEST_CACHE_TTL_S: int = 604800  # 7 days
+
+    # Storage backend abstraction (Phase 2): local FS for dev, S3-compatible for prod.
+    STORAGE_BACKEND: str = "local"  # local | s3
+    S3_ENDPOINT: str | None = None
+    S3_ACCESS_KEY: str | None = None
+    S3_SECRET_KEY: str | None = None
+    S3_BUCKET: str | None = None
+    S3_PUBLIC_BASE_URL: str | None = None  # CDN/public URL prefix, falls back to endpoint
+
+    # Tier 3 / composite tuning (Phase 3).
+    COMPOSITE_LIGHTING_STRENGTH: float = 0.25
+    COMPOSITE_LIGHTING_STEPS: int = 15
+    COMPOSITE_DEFAULT_WIDTH: int = 1536
+    COMPOSITE_DEFAULT_HEIGHT: int = 1024
+
+    # Asset library paths (Phase 2).
+    BACKDROP_SPECS_PATH: str = "./backend/config/backdrop_specs.yaml"
+    POSE_MATRIX_PATH: str = "./backend/config/pose_matrix.yaml"
+    BACKGROUND_REMOVAL_BACKEND: str = "rembg"  # rembg | birefnet
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

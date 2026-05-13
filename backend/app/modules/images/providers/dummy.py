@@ -26,3 +26,17 @@ class DummyProvider:
         params: dict[str, Any],
     ) -> bytes:
         return _TINY_PNG
+
+    async def generate_img2img(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        init_image_bytes: bytes,
+        strength: float,
+        steps: int,
+        lighting: dict[str, Any] | None = None,
+    ) -> bytes:
+        """No-op: returns the init bytes unchanged so the composite pipeline
+        completes end-to-end in tests."""
+        return init_image_bytes

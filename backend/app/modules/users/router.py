@@ -34,6 +34,8 @@ async def update_profile(
 ) -> UserResponse:
     if body.display_name is not None:
         current_user.display_name = body.display_name
+    if body.image_pref is not None:
+        current_user.image_pref = body.image_pref
     await db.commit()
     await db.refresh(current_user)
     return UserResponse.model_validate(current_user)

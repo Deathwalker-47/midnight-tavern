@@ -1,0 +1,197 @@
+# Backdrop pre-generation specs. The backdrop_generator worker reads this file
+# and creates one Backdrop row per slug, calling the image provider chain with
+# NO character LoRAs. Idempotent on slug — re-running the worker skips slugs
+# that already exist unless --regenerate is passed.
+#
+# Lighting profile is used both for retrieval (match poses with similar
+# lighting) and to seed the lighting unification img2img prompt at runtime.
+#
+# Tags drive Tier 3 backdrop selection: the scene classifier emits a tag set,
+# we rank backdrops by tag overlap, top match wins.
+
+backdrops:
+  # ── Tavern / inns ────────────────────────────────────────────────────────
+  - slug: tavern_interior_warm
+    prompt: "warm cozy tavern interior, wooden beams, fireplace glow, empty space in foreground for characters, painterly cinematic lighting, no people"
+    tags: [indoor, tavern, warm-light, fantasy, cozy]
+    lighting_profile: {direction: left, warmth: warm, intensity: soft}
+    aspect_ratio: "3:2"
+
+  - slug: tavern_corner_dim
+    prompt: "dim tavern back-room corner booth, candle on table, smoky atmosphere, deep shadows, painterly cinematic, no people"
+    tags: [indoor, tavern, low-light, intimate, fantasy]
+    lighting_profile: {direction: top, warmth: warm, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: inn_bedroom_morning
+    prompt: "rustic inn bedroom at morning, sunlight through wooden shutters, made bed, simple furniture, no people"
+    tags: [indoor, bedroom, morning, warm-light, cozy]
+    lighting_profile: {direction: right, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  # ── Forest / outdoor ────────────────────────────────────────────────────
+  - slug: forest_path_dusk
+    prompt: "moss-covered forest path at dusk, golden hour light filtering through trees, atmospheric, empty foreground space, no people"
+    tags: [outdoor, forest, golden-hour, fantasy, atmospheric]
+    lighting_profile: {direction: right, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  - slug: forest_clearing_noon
+    prompt: "sun-dappled forest clearing at midday, wildflowers, soft grass, painterly cinematic, no people"
+    tags: [outdoor, forest, daylight, peaceful]
+    lighting_profile: {direction: top, warmth: neutral, intensity: high}
+    aspect_ratio: "3:2"
+
+  - slug: forest_night_moonlit
+    prompt: "moonlit forest at night, cool blue light through tree canopy, mist, deep shadows, no people"
+    tags: [outdoor, forest, night, cool-light, mysterious]
+    lighting_profile: {direction: top, warmth: cool, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: mountain_peak_dawn
+    prompt: "mountain peak at dawn overlooking valley, cool morning haze, dramatic sky, no people"
+    tags: [outdoor, mountain, dawn, dramatic, vista]
+    lighting_profile: {direction: right, warmth: cool, intensity: high}
+    aspect_ratio: "3:2"
+
+  - slug: meadow_sunset
+    prompt: "wildflower meadow at sunset, long shadows, painterly cinematic, no people"
+    tags: [outdoor, meadow, sunset, warm-light, peaceful]
+    lighting_profile: {direction: right, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  # ── Civic / town ────────────────────────────────────────────────────────
+  - slug: market_square_busy_empty
+    prompt: "medieval market square with empty stalls, cobblestones, banners, late afternoon light, no people"
+    tags: [outdoor, town, daylight, civic]
+    lighting_profile: {direction: top, warmth: warm, intensity: high}
+    aspect_ratio: "3:2"
+
+  - slug: town_street_night
+    prompt: "medieval town street at night, lit by lanterns, fog at the ends of the alley, no people"
+    tags: [outdoor, town, night, low-light, mysterious]
+    lighting_profile: {direction: top, warmth: warm, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: harbor_wharf_dusk
+    prompt: "stone harbor wharf at dusk, anchored ship in the distance, gulls, lantern light beginning to glow, no people"
+    tags: [outdoor, harbor, dusk, water]
+    lighting_profile: {direction: left, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  # ── Indoor / castles ────────────────────────────────────────────────────
+  - slug: throne_room_cold
+    prompt: "vast cold stone throne room, tall windows with grey light, empty throne, banners, no people"
+    tags: [indoor, throne, cold-light, formal, fantasy]
+    lighting_profile: {direction: top, warmth: cool, intensity: medium}
+    aspect_ratio: "3:2"
+
+  - slug: throne_room_warm
+    prompt: "ornate gilded throne room lit by chandeliers, plush red carpet, empty throne, no people"
+    tags: [indoor, throne, warm-light, formal, opulent]
+    lighting_profile: {direction: top, warmth: warm, intensity: high}
+    aspect_ratio: "3:2"
+
+  - slug: library_quiet
+    prompt: "grand library with tall shelves, ladder, warm reading-lamp glow, motes in light beams, no people"
+    tags: [indoor, library, warm-light, scholarly, cozy]
+    lighting_profile: {direction: left, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  - slug: dungeon_stone
+    prompt: "cold stone dungeon corridor, iron sconces with flickering torches, deep shadows, no people"
+    tags: [indoor, dungeon, low-light, ominous]
+    lighting_profile: {direction: top, warmth: warm, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: dungeon_cell
+    prompt: "single stone dungeon cell with barred door, straw on the floor, small barred window with weak daylight, no people"
+    tags: [indoor, dungeon, low-light, confined]
+    lighting_profile: {direction: right, warmth: cool, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: temple_interior
+    prompt: "ornate temple interior, stained glass casting colored light on stone floor, altar in distance, no people"
+    tags: [indoor, temple, colorful, formal, sacred]
+    lighting_profile: {direction: left, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  - slug: alchemist_workshop
+    prompt: "cluttered alchemist workshop, glass bottles glowing, books open, candle lit, no people"
+    tags: [indoor, workshop, warm-light, cluttered, magical]
+    lighting_profile: {direction: top, warmth: warm, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: bedroom_intimate
+    prompt: "warm intimate bedroom with rumpled sheets, candle on bedside, soft fabric, no people"
+    tags: [indoor, bedroom, warm-light, intimate, cozy]
+    lighting_profile: {direction: left, warmth: warm, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: kitchen_rustic
+    prompt: "rustic medieval kitchen, hearth with fire, hanging herbs, wooden table, no people"
+    tags: [indoor, kitchen, warm-light, cozy, rustic]
+    lighting_profile: {direction: right, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  # ── Exotic / dramatic ────────────────────────────────────────────────────
+  - slug: cave_glowing_crystals
+    prompt: "underground cave with glowing blue crystals casting light, water reflections, no people"
+    tags: [indoor, cave, magical, cool-light, atmospheric]
+    lighting_profile: {direction: bottom, warmth: cool, intensity: medium}
+    aspect_ratio: "3:2"
+
+  - slug: ruins_overgrown
+    prompt: "ancient stone ruins overtaken by vines and moss, sunlight slanting through gaps, no people"
+    tags: [outdoor, ruins, daylight, ancient, atmospheric]
+    lighting_profile: {direction: top, warmth: warm, intensity: high}
+    aspect_ratio: "3:2"
+
+  - slug: desert_dunes_dawn
+    prompt: "rolling desert dunes at dawn, long blue shadows, distant mountains, no people"
+    tags: [outdoor, desert, dawn, dramatic, vast]
+    lighting_profile: {direction: right, warmth: cool, intensity: high}
+    aspect_ratio: "3:2"
+
+  - slug: snow_village
+    prompt: "snow-covered medieval village at night, candlelit windows, falling snow, no people"
+    tags: [outdoor, village, night, cold-light, peaceful]
+    lighting_profile: {direction: top, warmth: cool, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: ship_deck_storm
+    prompt: "wooden ship deck in stormy seas, dark sky, lantern swinging, no people"
+    tags: [outdoor, ship, storm, dramatic, sea]
+    lighting_profile: {direction: top, warmth: cool, intensity: low}
+    aspect_ratio: "3:2"
+
+  # ── Romantic / dating ───────────────────────────────────────────────────
+  - slug: rooftop_city_night
+    prompt: "modern city rooftop at night, distant skyline glow, string lights, plants, no people"
+    tags: [outdoor, urban, night, warm-light, intimate]
+    lighting_profile: {direction: top, warmth: warm, intensity: low}
+    aspect_ratio: "3:2"
+
+  - slug: cafe_corner
+    prompt: "warm cafe interior, window seat, coffee cups, soft ambient light, no people"
+    tags: [indoor, cafe, warm-light, casual, cozy]
+    lighting_profile: {direction: left, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  - slug: garden_pavilion
+    prompt: "stone garden pavilion at golden hour, climbing roses, soft warm light, no people"
+    tags: [outdoor, garden, golden-hour, peaceful, romantic]
+    lighting_profile: {direction: right, warmth: warm, intensity: medium}
+    aspect_ratio: "3:2"
+
+  - slug: beach_cove_sunset
+    prompt: "secluded beach cove at sunset, gentle waves, palms, warm orange sky, no people"
+    tags: [outdoor, beach, sunset, warm-light, peaceful]
+    lighting_profile: {direction: right, warmth: warm, intensity: high}
+    aspect_ratio: "3:2"
+
+  - slug: ballroom_chandelier
+    prompt: "ornate ballroom with marble floor, chandelier blazing, gilded mirrors, no people"
+    tags: [indoor, ballroom, warm-light, formal, opulent]
+    lighting_profile: {direction: top, warmth: warm, intensity: high}
+    aspect_ratio: "3:2"

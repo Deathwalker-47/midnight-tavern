@@ -20,6 +20,12 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Image generation preference: auto (LLM marker-driven), always (Tier 2/3
+    # on every assistant message), never (Tier 1 always). See
+    # ``app.modules.images.tier_router.ImagePref``.
+    image_pref: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="auto", server_default="auto"
+    )
 
     provider_keys: Mapped[list["ProviderKey"]] = relationship(  # type: ignore[name-defined]
         "ProviderKey", back_populates="user", lazy="select"

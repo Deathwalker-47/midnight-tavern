@@ -112,17 +112,46 @@ class LoRAManager:
         return out
 
     @staticmethod
-    def build_lora_list(matched: list[dict[str, Any]], max_loras: int) -> list[dict[str, Any]]:
+    def build_lora_list(
+        matched: list[dict[str, Any]],
+        max_loras: int,
+        *,
+        provider_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Truncate to ``max_loras`` and apply provider URL fallback.
+
+        If ``provider_name`` is set and the LoRA URL is in Runware shorthand
+        (``deathwalker:slug@1``) but the provider isn't Runware, attempt a
+        reverse lookup via ``runware_lora_mapping.json``. If the mapping is
+        missing, log a warning and drop the LoRA rather than passing an
+        unusable identifier to a non-Runware backend.
+        """
         out: list[dict[str, Any]] = []
+        mapping: dict[str, str] | None = None
         for item in matched:
             if len(out) >= max_loras:
                 break
             data = item["data"]
+            url = data["url"]
+            if provider_name is not None and provider_name != "runware" and _is_runware_shorthand(url):
+                if mapping is None:
+                    mapping = _load_runware_mapping()
+                fallback = mapping.get(url)
+                if fallback:
+                    url = fallback
+                else:
+                    logger.warning(
+                        "lora_provider_url_unmapped",
+                        lora_id=item["id"],
+                        provider=provider_name,
+                        runware_url=data["url"],
+                    )
+                    continue
             out.append(
                 {
                     "id": item["id"],
                     "name": data.get("name", item["id"]),
-                    "url": data["url"],
+                    "url": url,
                     "weight": data.get("weight", 1.0),
                 }
             )
@@ -169,6 +198,11 @@ def _dedupe(prompt: str) -> str:
 # Module-level singleton populated by the FastAPI lifespan.
 _manager: LoRAManager | None = None
 
+# Runware shorthand → public URL mapping. Populated lazily from
+# ``backend/data/runware_lora_mapping.json``. Used when a non-Runware provider
+# is asked to consume a LoRA stored under Runware's hosted shorthand.
+_RUNWARE_MAPPING_CACHE: dict[str, str] | None = None
+
 
 def init_lora_manager(dict_path: str | Path) -> LoRAManager:
     global _manager
@@ -178,3 +212,38 @@ def init_lora_manager(dict_path: str | Path) -> LoRAManager:
 
 def get_lora_manager() -> LoRAManager | None:
     return _manager
+
+
+def _is_runware_shorthand(url: str) -> bool:
+    """Runware uses ``namespace:slug@version`` for hosted LoRAs."""
+    return ":" in url and "@" in url and not url.startswith(("http://", "https://"))
+
+
+def _runware_mapping_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "data" / "runware_lora_mapping.json"
+
+
+def _load_runware_mapping() -> dict[str, str]:
+    global _RUNWARE_MAPPING_CACHE
+    if _RUNWARE_MAPPING_CACHE is not None:
+        return _RUNWARE_MAPPING_CACHE
+    path = _runware_mapping_path()
+    if not path.exists():
+        _RUNWARE_MAPPING_CACHE = {}
+        return _RUNWARE_MAPPING_CACHE
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("runware_mapping_load_failed", error=str(exc), path=str(path))
+        _RUNWARE_MAPPING_CACHE = {}
+        return _RUNWARE_MAPPING_CACHE
+    mapping = payload.get("mappings", {}) if isinstance(payload, dict) else {}
+    _RUNWARE_MAPPING_CACHE = {str(k): str(v) for k, v in mapping.items()}
+    return _RUNWARE_MAPPING_CACHE
+
+
+def reset_runware_mapping_for_tests() -> None:
+    """Drop the cached mapping so the next call reloads from disk."""
+    global _RUNWARE_MAPPING_CACHE
+    _RUNWARE_MAPPING_CACHE = None

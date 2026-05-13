@@ -1,0 +1,141 @@
+# Pose matrix. For each character LoRA, the worker generates one image per
+# (pose × expression × facing) combination, runs background removal, stores
+# the transparent PNG.
+#
+# Math: ~20 poses × 5 expressions × 3 facings = 300 images per character.
+# Wall clock: ~50 min/char on Runware. Cost: ~$1-2/char. One-time per LoRA
+# version (bump lora_version to invalidate).
+#
+# Prompt fragments support a single ``{trigger}`` placeholder that the worker
+# substitutes with the character's LoRA trigger word(s).
+
+framing_defaults: [full_body]
+
+poses:
+  - slug: standing_neutral
+    prompt_fragment: "{trigger}, standing relaxed, arms at sides, looking forward"
+    framings: [full_body, upper_body]
+    facings: [forward, three_quarter_left, three_quarter_right]
+
+  - slug: standing_arms_crossed
+    prompt_fragment: "{trigger}, standing with arms crossed, confident stance"
+    framings: [full_body, upper_body]
+    facings: [forward, three_quarter_left]
+
+  - slug: standing_one_hip
+    prompt_fragment: "{trigger}, standing with weight on one hip, hand on hip"
+    framings: [full_body]
+    facings: [forward, three_quarter_left, three_quarter_right]
+
+  - slug: sitting_relaxed
+    prompt_fragment: "{trigger}, sitting on a stool, hands resting in lap, relaxed"
+    framings: [waist_up, upper_body]
+    facings: [forward, three_quarter_left]
+
+  - slug: sitting_leaning_forward
+    prompt_fragment: "{trigger}, sitting and leaning forward, elbows on knees"
+    framings: [waist_up]
+    facings: [forward, three_quarter_left]
+
+  - slug: leaning_against_wall
+    prompt_fragment: "{trigger}, leaning casually against a wall, one shoulder forward"
+    framings: [full_body, upper_body]
+    facings: [three_quarter_left, three_quarter_right]
+
+  - slug: kneeling_one_knee
+    prompt_fragment: "{trigger}, kneeling on one knee, looking up"
+    framings: [full_body]
+    facings: [forward, three_quarter_left]
+
+  - slug: reaching_forward
+    prompt_fragment: "{trigger}, reaching forward with one hand, gentle gesture"
+    framings: [upper_body, waist_up]
+    facings: [forward, three_quarter_left]
+
+  - slug: gesturing_open_palm
+    prompt_fragment: "{trigger}, gesturing with open palm at side, mid-speech"
+    framings: [upper_body]
+    facings: [forward, three_quarter_left, three_quarter_right]
+
+  - slug: hand_on_chin
+    prompt_fragment: "{trigger}, hand on chin, thoughtful pose"
+    framings: [upper_body]
+    facings: [forward, three_quarter_left]
+
+  - slug: looking_over_shoulder
+    prompt_fragment: "{trigger}, looking back over the shoulder"
+    framings: [upper_body, full_body]
+    facings: [three_quarter_left, three_quarter_right]
+
+  - slug: walking_forward
+    prompt_fragment: "{trigger}, mid-stride walking forward"
+    framings: [full_body]
+    facings: [forward, three_quarter_left]
+
+  - slug: turning_away
+    prompt_fragment: "{trigger}, turning to walk away, body angled, head turned back"
+    framings: [full_body]
+    facings: [three_quarter_left, three_quarter_right]
+
+  - slug: hands_clasped
+    prompt_fragment: "{trigger}, hands clasped in front, demure stance"
+    framings: [upper_body, waist_up]
+    facings: [forward, three_quarter_left]
+
+  - slug: arms_outstretched_welcoming
+    prompt_fragment: "{trigger}, arms slightly outstretched in welcoming gesture"
+    framings: [upper_body, full_body]
+    facings: [forward]
+
+  - slug: fighting_stance
+    prompt_fragment: "{trigger}, ready fighting stance, balanced, hands raised"
+    framings: [full_body]
+    facings: [three_quarter_left, three_quarter_right]
+
+  - slug: holding_weapon
+    prompt_fragment: "{trigger}, holding a sword at side, alert posture"
+    framings: [full_body, upper_body]
+    facings: [three_quarter_left, three_quarter_right]
+
+  - slug: lying_propped
+    prompt_fragment: "{trigger}, lying on side propped on one elbow, relaxed"
+    framings: [full_body]
+    facings: [forward]
+
+  - slug: close_portrait
+    prompt_fragment: "{trigger}, head and shoulders portrait, neutral background"
+    framings: [upper_body]
+    facings: [forward, three_quarter_left, three_quarter_right]
+
+  - slug: dancing_step
+    prompt_fragment: "{trigger}, mid-dance step, graceful pose, one arm extended"
+    framings: [full_body]
+    facings: [three_quarter_left, three_quarter_right]
+
+expressions:
+  - slug: neutral
+    prompt_fragment: "calm neutral expression"
+
+  - slug: smiling
+    prompt_fragment: "warm gentle smile"
+
+  - slug: angry
+    prompt_fragment: "furrowed brow, tight lips, intense gaze"
+
+  - slug: surprised
+    prompt_fragment: "wide eyes, slightly open mouth, raised brows"
+
+  - slug: sad
+    prompt_fragment: "downcast eyes, slight frown, softened features"
+
+# Worker conventions:
+# * Each image generated against a neutral grey backdrop with flat lighting
+#   so the background remover (rembg/BiRefNet) has clean alpha edges.
+# * The Tier 3 runtime composes these over a backdrop and runs a low-strength
+#   img2img unification pass to blend lighting.
+generation:
+  neutral_backdrop_prompt: "neutral grey studio backdrop, flat soft lighting, no shadows on background"
+  width: 1024
+  height: 1024
+  steps: 30
+  cfg_scale: 4

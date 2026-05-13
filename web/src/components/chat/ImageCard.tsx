@@ -15,9 +15,22 @@ import {
 interface ImageCardProps {
   jobId: string;
   prompt: string;
+  kind?: "single" | "composite" | "hq";
 }
 
-export function ImageCard({ jobId, prompt }: ImageCardProps) {
+const KIND_LABEL: Record<string, string> = {
+  single: "Image",
+  composite: "Scene composite",
+  hq: "HQ image",
+};
+
+const STAGE_LABEL: Record<string, string> = {
+  generating: "Generating",
+  composing: "Compositing scene",
+  unifying: "Unifying lighting",
+};
+
+export function ImageCard({ jobId, prompt, kind = "single" }: ImageCardProps) {
   const [status, setStatus] = useState<ImageJobStatus>("queued");
   const [stage, setStage] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -63,8 +76,10 @@ export function ImageCard({ jobId, prompt }: ImageCardProps) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[75%] rounded-2xl rounded-bl-sm bg-gray-800 border border-gray-700 overflow-hidden">
-        <div className="px-4 py-2 text-xs text-gray-400 border-b border-gray-700/50">
-          🎨 <span className="font-medium text-gray-300">{prompt}</span>
+        <div className="px-4 py-2 text-xs text-gray-400 border-b border-gray-700/50 flex items-center gap-2">
+          <span>{kind === "composite" ? "🖼️" : "🎨"}</span>
+          <span className="font-medium text-gray-300">{KIND_LABEL[kind] ?? "Image"}:</span>
+          <span className="truncate">{prompt}</span>
         </div>
         {status === "completed" && imageUrl ? (
           <img src={imageUrl} alt={prompt} className="w-full h-auto max-w-md" />
@@ -76,7 +91,8 @@ export function ImageCard({ jobId, prompt }: ImageCardProps) {
           <div className="px-4 py-6 text-sm text-gray-400 flex items-center gap-2">
             <span className="inline-block h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
             {status === "queued" && "Queued…"}
-            {status === "running" && (stage ? `Generating (${stage})…` : "Generating…")}
+            {status === "running" &&
+              (stage ? `${STAGE_LABEL[stage] ?? stage}…` : "Generating…")}
           </div>
         )}
       </div>

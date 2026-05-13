@@ -25,12 +25,15 @@ export interface ImageOutput {
   created_at: string;
 }
 
+export type ImageJobKind = "single" | "composite" | "hq";
+
 export interface ImageJob {
   id: string;
   user_id: string;
   chat_id: string | null;
   character_id: string | null;
   status: ImageJobStatus;
+  job_kind: ImageJobKind;
   prompt_user: string;
   prompt_final: string | null;
   negative_prompt: string | null;
@@ -42,6 +45,7 @@ export interface ImageJob {
   loras_used: Array<Record<string, unknown>>;
   provider_used: string | null;
   providers_attempted: string[];
+  composite_meta: Record<string, unknown> | null;
   error_code: string | null;
   error_message: string | null;
   created_at: string;
@@ -62,9 +66,59 @@ export interface GenerateImageRequest {
   seed?: number;
 }
 
+export interface CompositeRequest {
+  chat_id?: string;
+  scene_description: string;
+  character_ids: string[];
+  width?: number;
+  height?: number;
+  seed?: number;
+}
+
+export interface BackdropResponse {
+  id: string;
+  slug: string;
+  description: string;
+  tags: string[];
+  width: number;
+  height: number;
+  storage_url: string;
+  lighting_profile: Record<string, unknown>;
+  aspect_ratio: string;
+  generated_at: string;
+}
+
+export interface CharacterPoseResponse {
+  id: string;
+  character_id: string;
+  lora_version: string;
+  pose_slug: string;
+  expression_slug: string;
+  framing: string;
+  facing: string;
+  transparent_storage_url: string;
+  width: number;
+  height: number;
+  bounding_box: Record<string, number>;
+  lighting_profile: Record<string, unknown>;
+  generated_at: string;
+}
+
 export const imagesApi = {
   generate: (body: GenerateImageRequest) =>
     apiFetch<ImageJob>("/api/v1/images/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  generateHq: (body: GenerateImageRequest) =>
+    apiFetch<ImageJob>("/api/v1/images/generate_hq", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  composite: (body: CompositeRequest) =>
+    apiFetch<ImageJob>("/api/v1/images/composite", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -75,6 +129,21 @@ export const imagesApi = {
     apiFetch<ImageJob>(`/api/v1/images/jobs/${jobId}/cancel`, {
       method: "POST",
     }),
+
+  listBackdrops: (tags?: string[]) => {
+    const qs = tags && tags.length ? `?${tags.map((t) => `tag=${encodeURIComponent(t)}`).join("&")}` : "";
+    return apiFetch<BackdropResponse[]>(`/api/v1/images/backdrops${qs}`);
+  },
+
+  listPoses: (
+    characterId: string,
+    filter: { pose_slug?: string; expression_slug?: string; facing?: string; lora_version?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(filter)) if (v) params.set(k, v);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return apiFetch<CharacterPoseResponse[]>(`/api/v1/images/characters/${characterId}/poses${qs}`);
+  },
 };
 
 export type ImageEventType =
