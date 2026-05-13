@@ -31,8 +31,27 @@ from app.modules.images.service import (
     get_job,
     stream_job_events,
 )
+from app.modules.images.tier_router import ImagePref
 
 router = APIRouter(prefix="/images", tags=["images"])
+
+
+def _reject_if_images_disabled(user: User) -> None:
+    """Defense in depth: respect ``image_pref=never`` on user-initiated image
+    endpoints (composite + HQ). Marker-driven dispatch from the chat router
+    already honors this via ``select_tier``; this catches manual triggers
+    that bypass the streaming hot path.
+    """
+    try:
+        pref = ImagePref(user.image_pref)
+    except ValueError:
+        pref = ImagePref.auto
+    if pref == ImagePref.never:
+        raise AppError(
+            "Image generation is disabled in your preferences",
+            status_code=403,
+            error_code="images_disabled",
+        )
 
 
 @router.post(
@@ -122,6 +141,7 @@ async def generate_hq(
     recorded so consumers can track usage. Poll the standard job/events
     endpoints — the API surface is identical to ``/generate``.
     """
+    _reject_if_images_disabled(current_user)
     if body.chat_id is not None:
         await get_chat(db, body.chat_id, current_user.id)
     job = await create_and_queue_hq_job(
@@ -158,6 +178,7 @@ async def composite(
 
     Expected p95 latency: <13s cache miss, <1s cache hit.
     """
+    _reject_if_images_disabled(current_user)
     if body.chat_id is not None:
         await get_chat(db, body.chat_id, current_user.id)
     if len(body.character_ids) < 1 or len(body.character_ids) > 5:

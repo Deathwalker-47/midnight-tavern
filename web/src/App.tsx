@@ -9,6 +9,8 @@ import { ChatPage } from "./pages/ChatPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { DMConfigEditorPage } from "./pages/DMConfigEditorPage";
+import { BackdropsPage } from "./pages/BackdropsPage";
+import { CharacterPosesPage } from "./pages/CharacterPosesPage";
 import { useAuthStore } from "./store/authStore";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -43,6 +45,8 @@ export default function App() {
         <Route path="/chat/:chatId" element={<RequireAuth><ChatPage /></RequireAuth>} />
         <Route path="/dm/configs/new" element={<RequireAuth><DMConfigEditorPage /></RequireAuth>} />
         <Route path="/dm/configs/:configId/edit" element={<RequireAuth><DMConfigEditorPage /></RequireAuth>} />
+        <Route path="/backdrops" element={<RequireAuth><BackdropsPage /></RequireAuth>} />
+        <Route path="/characters/:characterId/poses" element={<RequireAuth><CharacterPosesPage /></RequireAuth>} />
         <Route path="/" element={<Navigate to="/characters" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

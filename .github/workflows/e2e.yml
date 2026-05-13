@@ -1,0 +1,117 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    name: backend pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend deps
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Run pytest
+        working-directory: backend
+        run: python -m pytest -v
+
+  frontend-unit:
+    name: frontend vitest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+      - name: Run Vitest
+        working-directory: web
+        run: npm test
+
+  e2e-playwright:
+    # Marked as continue-on-error initially so flakes don't gate merges
+    # while the e2e suite stabilizes.
+    name: playwright e2e
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tavern
+          POSTGRES_PASSWORD: tavern
+          POSTGRES_DB: tavern_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tavern -d tavern_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Migrations 004+ use ALTER TABLE ADD CONSTRAINT, which SQLite can't
+      # do. Use a real Postgres so the schema matches production.
+      DATABASE_URL: postgresql+asyncpg://tavern:tavern@localhost:5432/tavern_e2e
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: e2e-secret-do-not-use-anywhere-else
+      CORS_ORIGINS: http://localhost:5173
+      DEBUG: "true"
+      IMAGE_PROVIDER_ORDER: dummy
+      IMAGES_STORAGE_DIR: ./var/e2e-images
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install backend deps
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Run Alembic migrations
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Start backend
+        working-directory: backend
+        run: |
+          nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
+          # Wait for backend to be ready.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -sf http://localhost:8000/api/v1/healthz > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:8000/api/v1/healthz || (cat backend.log && exit 1)
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+      - name: Install Playwright browsers
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright tests
+        working-directory: web
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 7

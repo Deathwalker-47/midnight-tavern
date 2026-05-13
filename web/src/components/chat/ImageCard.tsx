@@ -28,6 +28,13 @@ const STAGE_LABEL: Record<string, string> = {
   generating: "Generating",
   composing: "Compositing scene",
   unifying: "Unifying lighting",
+  backdrop: "Generating backdrop",
+  character_1: "Painting character 1",
+  character_2: "Painting character 2",
+  character_3: "Painting character 3",
+  character_4: "Painting character 4",
+  character_5: "Painting character 5",
+  harmonize: "Harmonizing lighting",
 };
 
 export function ImageCard({ jobId, prompt, kind = "single" }: ImageCardProps) {
@@ -77,7 +84,7 @@ export function ImageCard({ jobId, prompt, kind = "single" }: ImageCardProps) {
     <div className="flex justify-start">
       <div className="max-w-[75%] rounded-2xl rounded-bl-sm bg-gray-800 border border-gray-700 overflow-hidden">
         <div className="px-4 py-2 text-xs text-gray-400 border-b border-gray-700/50 flex items-center gap-2">
-          <span>{kind === "composite" ? "🖼️" : "🎨"}</span>
+          <span>{kind === "composite" ? "🖼️" : kind === "hq" ? "✨" : "🎨"}</span>
           <span className="font-medium text-gray-300">{KIND_LABEL[kind] ?? "Image"}:</span>
           <span className="truncate">{prompt}</span>
         </div>

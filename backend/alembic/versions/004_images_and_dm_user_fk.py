@@ -17,13 +17,17 @@ depends_on = None
 
 def upgrade() -> None:
     # ── image_jobs ────────────────────────────────────────────────────────
-    image_job_status = sa.Enum(
+    # ``create_type=False`` so the column references below don't try to
+    # CREATE TYPE a second time (Postgres rejects DuplicateObjectError); we
+    # create the type explicitly with ``checkfirst=True`` instead.
+    image_job_status = postgresql.ENUM(
         "queued",
         "running",
         "completed",
         "failed",
         "canceled",
         name="image_job_status",
+        create_type=False,
     )
     image_job_status.create(op.get_bind(), checkfirst=True)
 

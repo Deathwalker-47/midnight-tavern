@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { charactersApi, type Character, type CreateCharacterBody } from "../api/characters";
 import { chatsApi } from "../api/chats";
 import { ApiError } from "../api/client";
@@ -41,12 +41,21 @@ function CharacterCard({
           ))}
         </div>
       )}
-      <button
-        onClick={() => onChat(character.id)}
-        className="w-full py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm text-white font-medium transition-colors"
-      >
-        Chat
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onChat(character.id)}
+          className="flex-1 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm text-white font-medium transition-colors"
+        >
+          Chat
+        </button>
+        <Link
+          to={`/characters/${character.id}/poses`}
+          className="px-3 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+          title="Browse generated poses"
+        >
+          Poses
+        </Link>
+      </div>
     </div>
   );
 }
@@ -110,30 +119,30 @@ function CreateCharacterModal({ onClose, onCreate }: { onClose: () => void; onCr
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Name *</label>
-            <input value={form.name} onChange={set("name")} required maxLength={100}
+            <label htmlFor="char-name" className="block text-sm text-gray-400 mb-1">Name *</label>
+            <input id="char-name" value={form.name} onChange={set("name")} required maxLength={100}
               className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 focus:outline-none focus:border-indigo-500 text-sm" />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Description</label>
-            <input value={form.description ?? ""} onChange={set("description")} maxLength={500}
+            <label htmlFor="char-description" className="block text-sm text-gray-400 mb-1">Description</label>
+            <input id="char-description" value={form.description ?? ""} onChange={set("description")} maxLength={500}
               className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 focus:outline-none focus:border-indigo-500 text-sm" />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Personality</label>
-            <textarea value={form.personality ?? ""} onChange={set("personality")} rows={3}
+            <label htmlFor="char-personality" className="block text-sm text-gray-400 mb-1">Personality</label>
+            <textarea id="char-personality" value={form.personality ?? ""} onChange={set("personality")} rows={3}
               className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 focus:outline-none focus:border-indigo-500 text-sm resize-none" />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">System prompt</label>
-            <textarea value={form.system_prompt ?? ""} onChange={set("system_prompt")} rows={4}
+            <label htmlFor="char-system-prompt" className="block text-sm text-gray-400 mb-1">System prompt</label>
+            <textarea id="char-system-prompt" value={form.system_prompt ?? ""} onChange={set("system_prompt")} rows={4}
               placeholder="You are {{name}}, a mysterious tavern keeper who..."
               className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 focus:outline-none focus:border-indigo-500 text-sm resize-none font-mono" />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Tags</label>
+            <label htmlFor="char-tags" className="block text-sm text-gray-400 mb-1">Tags</label>
             <div className="flex gap-2">
-              <input value={tagInput} onChange={(e) => setTagInput(e.target.value)}
+              <input id="char-tags" value={tagInput} onChange={(e) => setTagInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addTag())}
                 placeholder="fantasy, romance…"
                 className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 focus:outline-none focus:border-indigo-500 text-sm" />

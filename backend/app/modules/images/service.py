@@ -268,17 +268,472 @@ async def run_job(job_id: uuid.UUID) -> None:
 
 
 async def run_hq_job(job_id: uuid.UUID) -> None:
-    """Phase 5 stub for the high-quality (sequential inpainting) path.
+    """Phase 5 HQ MultiCharPipeline — sequential inpainting.
 
-    The plan §6 calls for ``MultiCharPipeline`` to live behind this endpoint —
-    that pipeline isn't ported into midnight-tavern yet (it lives in the
-    upstream ``flux_lora_bridge.py``). Until it is, the HQ path falls back to
-    the standard single-character generator, which still produces a valid
-    image but without the quality bump. ``job_kind="hq"`` is recorded so a
-    future port can swap this stub for the real pipeline with no API change.
+    Ported from Silly-Tavern-Flux-Bridge/flux_lora_bridge.py ``MultiCharPipeline``
+    (~lines 1900-2250). Flow:
+
+    1. Pass 0 — backdrop generation with no character LoRAs.
+    2. Pass 1..N — inpaint each character into its layout slot using
+       ``provider.generate_inpaint`` over a feathered mask.
+    3. Pass N+1 — optional whole-image low-strength img2img over the seam
+       mask to harmonize lighting between adjacent character regions.
+       Runs when ``HQ_HARMONIZE_ENABLED`` is true and N >= 3.
+
+    Slot rectangles come from ``composer.LAYOUT_TEMPLATES`` — same geometry
+    the Tier 3 composite path uses. ``MaskGenerator`` builds white-on-black
+    feathered PNG masks from the pixel rectangles.
+
+    Falls back to ``run_job`` (single-shot Tier 2) when no character_ids can
+    be resolved — keeps the contract that ``/generate_hq`` always produces
+    *something* even for free-form prompts.
     """
-    logger.warning("hq_pipeline_not_implemented_falling_back_to_single", job_id=str(job_id))
-    await run_job(job_id)
+    from app.modules.characters.models import Character
+    from app.modules.images.composer import pick_layout
+    from app.modules.images.mask_generator import (
+        generate_seam_mask,
+        generate_slot_mask,
+    )
+
+    async with AsyncSessionLocal() as db:
+        job = await _load_job(db, job_id)
+        if job is None:
+            logger.warning("hq_job_missing", job_id=str(job_id))
+            return
+
+        # Resolve participating character_ids. Order: composite_meta override
+        # (future multi-char endpoint), then the single character_id field.
+        meta: dict[str, Any] = job.composite_meta or {}
+        character_ids: list[uuid.UUID] = []
+        for cid_str in meta.get("character_ids") or []:
+            try:
+                character_ids.append(uuid.UUID(cid_str))
+            except (ValueError, TypeError):
+                pass
+        if not character_ids and job.character_id is not None:
+            character_ids = [job.character_id]
+
+        if not character_ids:
+            logger.info("hq_no_characters_fallback_to_single", job_id=str(job_id))
+            await run_job(job_id)
+            return
+
+        try:
+            job.status = ImageJobStatus.running
+            await db.commit()
+            await channel.publish(
+                job_id,
+                {"event": "image_started", "data": {"job_id": str(job_id), "kind": "hq"}},
+            )
+
+            # Honor the requested dimensions from the job row; the request
+            # schema defaults to 1024×1024 but callers can pass arbitrary
+            # values up to 2048. The composer scales its 1536×1024 reference
+            # slots to whatever canvas is in play.
+            canvas_w = job.width
+            canvas_h = job.height
+            num_chars = min(len(character_ids), 5)
+            character_ids = character_ids[:num_chars]
+            layout_name, slots = pick_layout(num_chars)
+
+            # Scale the reference 1536x1024 layout slots to the HQ canvas.
+            ref_w, ref_h = 1536, 1024
+            sx, sy = canvas_w / ref_w, canvas_h / ref_h
+            scaled_slots: list[tuple[int, int, int, int]] = [
+                (int(x * sx), int(y * sy), int(w * sx), int(h * sy))
+                for (x, y, w, h) in slots
+            ]
+
+            characters: list[Character] = []
+            for cid in character_ids:
+                result = await db.execute(
+                    select(Character).where(
+                        Character.id == cid, Character.deleted_at.is_(None)
+                    )
+                )
+                ch = result.scalar_one_or_none()
+                if ch is None:
+                    raise ValueError(f"character {cid} not found")
+                characters.append(ch)
+
+            # Pass 0 — backdrop. No character LoRAs; use job.prompt_user as the
+            # scene description with a "wide shot, group composition" hint so
+            # the model leaves room for characters.
+            await channel.publish(
+                job_id,
+                {
+                    "event": "image_progress",
+                    "data": {"job_id": str(job_id), "stage": "backdrop"},
+                },
+            )
+            bg_prompt = (
+                f"{job.prompt_user.strip()}, wide shot, group composition, "
+                f"open space for {num_chars} character(s), "
+                "photorealistic, detailed environment, cinematic lighting"
+            )
+            bg_negative = "low quality, blurry, deformed"
+            bg_params: dict[str, Any] = {
+                "steps": settings.HQ_BG_STEPS,
+                "cfg_scale": job.cfg_scale,
+                "width": canvas_w,
+                "height": canvas_h,
+                "seed": job.seed if job.seed is not None else -1,
+            }
+            chain = _build_chain()
+            per_pass_timeout = int(
+                settings.IMAGE_PROVIDER_TIMEOUT_S * settings.HQ_PER_PASS_TIMEOUT_MULTIPLIER
+            )
+            chain.timeout_s = per_pass_timeout
+            bg_result = await chain.generate(bg_prompt, bg_negative, [], bg_params)
+            current_image = bg_result.image_bytes
+            providers_attempted: list[str] = list(bg_result.providers_attempted)
+
+            # Strength schedule: front characters need higher strength to fully
+            # replace the backdrop region; background characters can use less.
+            # Our composer slots aren't z-stratified (z-order = list order), so
+            # we use foreground strength for all by default. Background slots
+            # for layouts 3-5 (the smaller, upper ones) get midground strength.
+            strength_by_idx: dict[int, float] = {}
+            for idx in range(num_chars):
+                # Layouts 3,4,5 have the "back" slots later in the list with
+                # smaller y values; we approximate by area: smaller slot = bg.
+                _, _, w, h = scaled_slots[idx]
+                strength_by_idx[idx] = (
+                    settings.HQ_FG_STRENGTH if w * h > (canvas_w * canvas_h * 0.25)
+                    else settings.HQ_MG_STRENGTH
+                )
+
+            # Pass 1..N — per-character inpaint.
+            successful_inpaints = 0
+            failed_inpaints = 0
+            inpaint_failure_reason: str | None = None
+            for idx, character in enumerate(characters):
+                slot = scaled_slots[idx]
+                await channel.publish(
+                    job_id,
+                    {
+                        "event": "image_progress",
+                        "data": {
+                            "job_id": str(job_id),
+                            "stage": f"character_{idx + 1}",
+                            "character_id": str(character.id),
+                        },
+                    },
+                )
+
+                # Build per-character prompt + LoRAs.
+                ch_prompt, ch_negative, matched_loras = await build_image_prompt(
+                    db,
+                    user_prompt=job.prompt_user,
+                    negative_prompt=job.negative_prompt,
+                    chat_id=job.chat_id,
+                    character_id=character.id,
+                )
+                provider_loras = LoRAManager.build_lora_list(
+                    matched_loras, max_loras=PROVIDER_MAX_LORAS.get("runware", 12)
+                )
+
+                mask_bytes = generate_slot_mask(
+                    canvas_w, canvas_h, slot, feather_px=settings.HQ_FEATHER_PX
+                )
+
+                inpaint_params: dict[str, Any] = {
+                    "cfg_scale": job.cfg_scale,
+                    "width": canvas_w,
+                    "height": canvas_h,
+                }
+                try:
+                    next_image, used = await _run_inpaint_pass(
+                        prompt=ch_prompt,
+                        negative_prompt=ch_negative,
+                        loras=provider_loras,
+                        init_image_bytes=current_image,
+                        mask_bytes=mask_bytes,
+                        strength=strength_by_idx[idx],
+                        steps=settings.HQ_FG_STEPS,
+                        params=inpaint_params,
+                        timeout_s=per_pass_timeout,
+                    )
+                    current_image = next_image
+                    successful_inpaints += 1
+                    if used not in providers_attempted:
+                        providers_attempted.append(used)
+                except _AllInpaintProvidersFailed as exc:
+                    # Track the failure but keep going — for multi-char,
+                    # we may still produce a useful partial result with
+                    # other characters rendered. If none succeed at all
+                    # we fail the job below rather than silently shipping
+                    # a backdrop with no character (Codex P1 review).
+                    failed_inpaints += 1
+                    inpaint_failure_reason = str(exc)
+                    logger.warning(
+                        "hq_inpaint_pass_failed",
+                        job_id=str(job_id),
+                        idx=idx + 1,
+                        error=str(exc),
+                    )
+                    break
+
+            # If no character pass succeeded, the only thing in current_image
+            # is the backdrop — that's not the HQ render the user asked for.
+            # Surface as a failed job with explicit code, instead of returning
+            # a misleading "completed" state. Multi-char calls keep partial
+            # results when at least one character rendered.
+            if successful_inpaints == 0 and failed_inpaints > 0:
+                raise _AllInpaintProvidersFailed(
+                    inpaint_failure_reason or "all character inpaint passes failed"
+                )
+
+            # Pass N+1 — optional harmonization (only meaningful with adjacent
+            # slots, so 3+ characters by default and at least 2 successful
+            # inpaints — no point harmonizing seams that don't exist).
+            do_harmonize = (
+                settings.HQ_HARMONIZE_ENABLED
+                and num_chars >= 3
+                and successful_inpaints >= 2
+            )
+            if do_harmonize:
+                await channel.publish(
+                    job_id,
+                    {
+                        "event": "image_progress",
+                        "data": {"job_id": str(job_id), "stage": "harmonize"},
+                    },
+                )
+                seam_bytes = generate_seam_mask(canvas_w, canvas_h, scaled_slots)
+                try:
+                    current_image = await _run_harmonize_pass(
+                        composite_bytes=current_image,
+                        seam_mask=seam_bytes,
+                        prompt=(
+                            f"{job.prompt_user.strip()}, consistent lighting, "
+                            "unified color palette, photorealistic"
+                        ),
+                        timeout_s=per_pass_timeout,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "hq_harmonize_failed",
+                        job_id=str(job_id),
+                        error=str(exc),
+                    )
+
+            # Persist final image + complete.
+            storage = get_storage()
+            url = await storage.save(job_id, idx=0, data=current_image, ext="png")
+            output = ImageOutput(
+                job_id=job_id,
+                storage_url=url,
+                mime_type="image/png",
+                bytes_size=len(current_image),
+                width=canvas_w,
+                height=canvas_h,
+            )
+            db.add(output)
+            job.status = ImageJobStatus.completed
+            job.provider_used = "hq_multichar"
+            job.providers_attempted = providers_attempted
+            job.composite_meta = {
+                **(job.composite_meta or {}),
+                "layout": layout_name,
+                "num_characters": num_chars,
+                "successful_inpaints": successful_inpaints,
+                "failed_inpaints": failed_inpaints,
+                "harmonized": do_harmonize,
+                "canvas": [canvas_w, canvas_h],
+            }
+            job.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+
+            total_passes = (
+                1  # backdrop
+                + successful_inpaints
+                + (1 if do_harmonize else 0)
+            )
+            await channel.publish(
+                job_id,
+                {
+                    "event": "image_completed",
+                    "data": {
+                        "job_id": str(job_id),
+                        "provider": "hq_multichar",
+                        "cache_hit": False,
+                        "outputs": [{"storage_url": url}],
+                        "hq": {
+                            "layout": layout_name,
+                            "passes": total_passes,
+                            "successful_inpaints": successful_inpaints,
+                            "failed_inpaints": failed_inpaints,
+                        },
+                    },
+                },
+            )
+        except _AllInpaintProvidersFailed as exc:
+            # All character inpaint passes failed — the backdrop alone is
+            # not the HQ render the user requested.
+            job.status = ImageJobStatus.failed
+            job.error_code = "hq_no_inpaint_provider"
+            job.error_message = str(exc)
+            await db.commit()
+            await channel.publish(
+                job_id,
+                {
+                    "event": "image_failed",
+                    "data": {
+                        "job_id": str(job_id),
+                        "error": str(exc),
+                        "code": "hq_no_inpaint_provider",
+                    },
+                },
+            )
+        except AllProvidersFailedError as exc:
+            job.status = ImageJobStatus.failed
+            job.error_code = "hq_pass_failed"
+            job.error_message = exc.last_error
+            job.providers_attempted = exc.attempted
+            await db.commit()
+            await channel.publish(
+                job_id,
+                {
+                    "event": "image_failed",
+                    "data": {"job_id": str(job_id), "error": exc.last_error, "code": "hq_pass_failed"},
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("hq_job_error", job_id=str(job_id))
+            job.status = ImageJobStatus.failed
+            job.error_code = "internal_error"
+            job.error_message = str(exc)
+            await db.commit()
+            await channel.publish(
+                job_id,
+                {
+                    "event": "image_failed",
+                    "data": {"job_id": str(job_id), "error": str(exc)},
+                },
+            )
+
+
+class _AllInpaintProvidersFailed(Exception):
+    """No configured provider supports inpaint or all of them failed for a
+    specific pass. Distinct from ``AllProvidersFailedError`` so the HQ flow
+    can fall back to a partial result rather than failing the whole job.
+    """
+
+
+async def _run_inpaint_pass(
+    *,
+    prompt: str,
+    negative_prompt: str,
+    loras: list[dict[str, Any]],
+    init_image_bytes: bytes,
+    mask_bytes: bytes,
+    strength: float,
+    steps: int,
+    params: dict[str, Any],
+    timeout_s: int,
+) -> tuple[bytes, str]:
+    """Run an inpaint pass over the provider chain, returning (bytes, provider).
+
+    Skips providers that don't implement ``generate_inpaint``; advances on
+    transient errors. Raises ``_AllInpaintProvidersFailed`` if none succeed.
+    """
+    last_error = "no inpaint-capable provider"
+    for name in settings.image_provider_order_list or ["dummy"]:
+        cls = _PROVIDER_FACTORY.get(name)
+        if cls is None:
+            continue
+        provider = cls()
+        method = getattr(provider, "generate_inpaint", None)
+        if method is None:
+            continue
+        try:
+            data = await asyncio.wait_for(
+                method(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    loras=loras,
+                    init_image_bytes=init_image_bytes,
+                    mask_bytes=mask_bytes,
+                    strength=strength,
+                    steps=steps,
+                    params=params,
+                ),
+                timeout=timeout_s,
+            )
+            return data, provider.name
+        except NotImplementedError:
+            continue
+        except asyncio.TimeoutError:
+            last_error = f"{provider.name} timeout after {timeout_s}s"
+            logger.warning("hq_inpaint_timeout", provider=provider.name)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{provider.name}: {exc!r}"
+            logger.warning("hq_inpaint_failed", provider=provider.name, error=last_error)
+            continue
+    raise _AllInpaintProvidersFailed(last_error)
+
+
+async def _run_harmonize_pass(
+    *,
+    composite_bytes: bytes,
+    seam_mask: bytes,
+    prompt: str,
+    timeout_s: int,
+) -> bytes:
+    """Whole-image low-strength img2img to smooth seams between inpainted chars.
+
+    Falls back to ``generate_img2img`` (which doesn't take a mask) when no
+    provider supports masked harmonization — providers like Runware accept
+    masks via ``generate_inpaint`` so we try that first.
+    """
+    for name in settings.image_provider_order_list or ["dummy"]:
+        cls = _PROVIDER_FACTORY.get(name)
+        if cls is None:
+            continue
+        provider = cls()
+        # Prefer mask-aware inpaint for harmonization (preserves character
+        # regions); fall back to plain img2img on the whole image.
+        inpaint = getattr(provider, "generate_inpaint", None)
+        if inpaint is not None:
+            try:
+                return await asyncio.wait_for(
+                    inpaint(
+                        prompt=prompt,
+                        negative_prompt="",
+                        loras=[],
+                        init_image_bytes=composite_bytes,
+                        mask_bytes=seam_mask,
+                        strength=settings.HQ_HARMONIZE_STRENGTH,
+                        steps=settings.HQ_HARMONIZE_STEPS,
+                        params={},
+                    ),
+                    timeout=timeout_s,
+                )
+            except NotImplementedError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hq_harmonize_inpaint_failed", provider=name, error=str(exc))
+        img2img = getattr(provider, "generate_img2img", None)
+        if img2img is not None:
+            try:
+                return await asyncio.wait_for(
+                    img2img(
+                        prompt=prompt,
+                        negative_prompt="",
+                        init_image_bytes=composite_bytes,
+                        strength=settings.HQ_HARMONIZE_STRENGTH,
+                        steps=settings.HQ_HARMONIZE_STEPS,
+                    ),
+                    timeout=timeout_s,
+                )
+            except NotImplementedError:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hq_harmonize_img2img_failed", provider=name, error=str(exc))
+                continue
+    return composite_bytes
 
 
 async def create_and_queue_hq_job(

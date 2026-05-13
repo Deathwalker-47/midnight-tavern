@@ -39,11 +39,15 @@ export function RegisterPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {(["username", "email", "password", "display_name"] as const).map((field) => (
             <div key={field}>
-              <label className="block text-sm text-gray-400 mb-1 capitalize">
+              <label
+                htmlFor={`register-${field}`}
+                className="block text-sm text-gray-400 mb-1 capitalize"
+              >
                 {field.replace("_", " ")}
                 {field === "display_name" && <span className="text-gray-600 ml-1">(optional)</span>}
               </label>
               <input
+                id={`register-${field}`}
                 type={field === "password" ? "password" : field === "email" ? "email" : "text"}
                 value={form[field]}
                 onChange={set(field)}

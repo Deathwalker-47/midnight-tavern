@@ -19,3 +19,9 @@ build/
 Thumbs.db
 create_repo.ps1
 check_repo.ps1
+
+# Playwright artifacts
+web/test-results/
+web/playwright-report/
+web/playwright/.cache/
+web/blob-report/

@@ -33,8 +33,9 @@ export function LoginPage() {
         <h1 className="text-2xl font-semibold text-center mb-8">Sign in</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Username</label>
+            <label htmlFor="login-username" className="block text-sm text-gray-400 mb-1">Username</label>
             <input
+              id="login-username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -43,8 +44,9 @@ export function LoginPage() {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Password</label>
+            <label htmlFor="login-password" className="block text-sm text-gray-400 mb-1">Password</label>
             <input
+              id="login-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

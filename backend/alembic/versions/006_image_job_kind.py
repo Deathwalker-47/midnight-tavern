@@ -19,7 +19,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    image_job_kind = sa.Enum("single", "composite", "hq", name="image_job_kind")
+    # ``create_type=False`` so the column reference below doesn't try to
+    # CREATE TYPE a second time (Postgres rejects DuplicateObjectError); we
+    # create the type explicitly with ``checkfirst=True`` instead.
+    image_job_kind = postgresql.ENUM(
+        "single",
+        "composite",
+        "hq",
+        name="image_job_kind",
+        create_type=False,
+    )
     image_job_kind.create(op.get_bind(), checkfirst=True)
     op.add_column(
         "image_jobs",

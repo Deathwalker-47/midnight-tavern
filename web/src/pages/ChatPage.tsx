@@ -20,47 +20,9 @@ import { RollBar } from "../components/chat/RollBar";
 import { useDMStore, handleDMEvent, type DMEvalResult, type DMRoll } from "../store/dmStore";
 import { dmApi, type StatDefinition } from "../api/dm";
 import { imagesApi } from "../api/images";
-import { usersApi, type ImagePref } from "../api/users";
 import { useAuthStore } from "../store/authStore";
 import { ImageCard } from "../components/chat/ImageCard";
-
-// ── Image preference toggle ──────────────────────────────────────────────
-
-function ImagePrefToggle() {
-  const user = useAuthStore((s) => s.user);
-  const setUser = useAuthStore((s) => s.setUser);
-  const pref: ImagePref = (user?.image_pref ?? "auto") as ImagePref;
-  const cycle: Record<ImagePref, ImagePref> = {
-    auto: "always",
-    always: "never",
-    never: "auto",
-  };
-  const label: Record<ImagePref, string> = {
-    auto: "🪄 Images: Auto",
-    always: "🖼️ Images: Always",
-    never: "🚫 Images: Never",
-  };
-  async function onClick() {
-    const next = cycle[pref];
-    try {
-      const updated = await usersApi.updateProfile({ image_pref: next });
-      setUser(updated);
-    } catch {
-      // silently fail — user can retry
-    }
-  }
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title="Cycle through Auto / Always / Never image generation"
-      className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-    >
-      {label[pref]}
-    </button>
-  );
-}
-
+import { ImagePrefToggle } from "../components/chat/ImagePrefToggle";
 
 // ── Message bubble ────────────────────────────────────────────────────────────
 
@@ -125,6 +87,13 @@ export function ChatPage() {
     Array<{ jobId: string; prompt: string; kind: "single" | "composite" | "hq" }>
   >([]);
   const [illustrating, setIllustrating] = useState(false);
+  const [hqRendering, setHqRendering] = useState(false);
+  // Hide the manual image-render buttons when the user has disabled images.
+  // The backend also returns 403 in this state — this gating is just UX so
+  // the buttons aren't there to click in the first place.
+  const imagesEnabled = useAuthStore(
+    (s) => (s.user?.image_pref ?? "auto") !== "never",
+  );
   // Answer input state
   const [answerInput, setAnswerInput] = useState("");
   const [answerSubmitting, setAnswerSubmitting] = useState(false);
@@ -276,11 +245,17 @@ export function ChatPage() {
                 },
               });
             } else if (type === "dm_stat_update") {
-              const changes = (data.changes as Array<{name: string; display_name: string; old_value: number | string; new_value: number | string; delta: number | null}>) ?? [];
-              if (changes.length > 0) {
+              const raw = (data.changes as Array<{name: string; display_name: string; old_value: number | string; new_value: number | string; delta: number | null}>) ?? [];
+              if (raw.length > 0) {
                 pushDMEvent({
                   kind: "stat_update",
-                  changes,
+                  changes: raw.map((c) => ({
+                    name: c.name,
+                    displayName: c.display_name,
+                    oldValue: c.old_value,
+                    newValue: c.new_value,
+                    delta: c.delta,
+                  })),
                   deathState: data.death_state as boolean | undefined,
                 });
               }
@@ -408,9 +383,9 @@ export function ChatPage() {
             <ImageCard key={j.jobId} jobId={j.jobId} prompt={j.prompt} kind={j.kind} />
           ))}
 
-          {/* Illustrate the current scene as a Tier-3 composite */}
-          {character && messages.length > 0 && (
-            <div className="flex justify-start">
+          {/* Illustrate the current scene as a Tier-3 composite + HQ render */}
+          {character && messages.length > 0 && imagesEnabled && (
+            <div className="flex justify-start gap-2">
               <button
                 type="button"
                 disabled={illustrating || streaming}
@@ -444,6 +419,41 @@ export function ChatPage() {
                 className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 transition disabled:opacity-50"
               >
                 {illustrating ? "Illustrating…" : "🖼️ Illustrate scene"}
+              </button>
+              <button
+                type="button"
+                disabled={hqRendering || streaming}
+                title="High-quality multi-pass render. Takes 30–60s."
+                onClick={async () => {
+                  if (!chatId || !character) return;
+                  const lastAssistant = [...messages]
+                    .reverse()
+                    .find((m) => m.role !== "user");
+                  const prompt =
+                    lastAssistant?.content?.slice(0, 600) ?? "The current scene";
+                  setHqRendering(true);
+                  setError(null);
+                  try {
+                    const job = await imagesApi.generateHq({
+                      prompt,
+                      chat_id: chatId,
+                      character_id: character.id,
+                    });
+                    setImageJobs((prev) => [
+                      ...prev,
+                      { jobId: job.id, prompt, kind: "hq" },
+                    ]);
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : "HQ render request failed",
+                    );
+                  } finally {
+                    setHqRendering(false);
+                  }
+                }}
+                className="text-xs px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-900/40 to-purple-900/40 border border-amber-700/50 text-amber-200 hover:from-amber-800/40 hover:to-purple-800/40 transition disabled:opacity-50"
+              >
+                {hqRendering ? "Queuing HQ…" : "✨ HQ scene"}
               </button>
             </div>
           )}

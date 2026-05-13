@@ -51,6 +51,23 @@ class Settings(BaseSettings):
     POSE_MATRIX_PATH: str = "./backend/config/pose_matrix.yaml"
     BACKGROUND_REMOVAL_BACKEND: str = "rembg"  # rembg | birefnet
 
+    # HQ MultiCharPipeline tuning (Phase 5). Ported defaults from
+    # Silly-Tavern-Flux-Bridge/flux_lora_bridge.py Config (MULTI_CHAR_*).
+    # Canvas dimensions come from the per-job request (job.width/height) so
+    # they aren't config knobs here.
+    HQ_BG_STEPS: int = 25
+    HQ_FG_STEPS: int = 25
+    HQ_FG_STRENGTH: float = 0.92
+    HQ_MG_STRENGTH: float = 0.88
+    HQ_BG_STRENGTH: float = 0.85
+    HQ_HARMONIZE_ENABLED: bool = True
+    HQ_HARMONIZE_STRENGTH: float = 0.30
+    HQ_HARMONIZE_STEPS: int = 15
+    HQ_FEATHER_PX: int = 40
+    # Per-pass timeout = IMAGE_PROVIDER_TIMEOUT_S × this multiplier (HQ passes
+    # legitimately need more headroom than single-shot Tier 2 calls).
+    HQ_PER_PASS_TIMEOUT_MULTIPLIER: float = 1.5
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
