@@ -19,6 +19,8 @@ import { DMMessage, type DMMessageType } from "../components/chat/DMMessage";
 import { RollBar } from "../components/chat/RollBar";
 import { useDMStore, handleDMEvent, type DMEvalResult, type DMRoll } from "../store/dmStore";
 import { dmApi, type StatDefinition } from "../api/dm";
+import { imagesApi } from "../api/images";
+import { ImageCard } from "../components/chat/ImageCard";
 
 // ── Message bubble ────────────────────────────────────────────────────────────
 
@@ -78,6 +80,8 @@ export function ChatPage() {
   const [loading, setLoading] = useState(true);
   // Per-message DM game event data (for RollBar rendering)
   const [messageEvents, setMessageEvents] = useState<Record<string, MessageDMData>>({});
+  // In-chat image generation jobs
+  const [imageJobs, setImageJobs] = useState<Array<{ jobId: string; prompt: string }>>([]);
   // Answer input state
   const [answerInput, setAnswerInput] = useState("");
   const [answerSubmitting, setAnswerSubmitting] = useState(false);
@@ -170,6 +174,21 @@ export function ChatPage() {
     e.preventDefault();
     const content = input.trim();
     if (!content || streaming || !chatId) return;
+
+    // /image <prompt> intercept — submit as image-generation job instead of chat message
+    if (content.toLowerCase().startsWith("/image ")) {
+      const prompt = content.slice("/image ".length).trim();
+      if (!prompt) return;
+      setInput("");
+      setError(null);
+      try {
+        const job = await imagesApi.generate({ chat_id: chatId, prompt });
+        setImageJobs((prev) => [...prev, { jobId: job.id, prompt }]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to start image job");
+      }
+      return;
+    }
 
     setInput("");
     setError(null);
@@ -332,6 +351,11 @@ export function ChatPage() {
             <DMMessage key={ev.id} message={ev.message} />
           ))}
 
+          {/* In-chat image generation jobs */}
+          {imageJobs.map((j) => (
+            <ImageCard key={j.jobId} jobId={j.jobId} prompt={j.prompt} />
+          ))}
+
           {/* Streaming character response */}
           {streaming && streamingText !== undefined && (
             <StreamingBubble text={streamingText} />
@@ -390,7 +414,7 @@ export function ChatPage() {
               }
             }}
             disabled={streaming}
-            placeholder={streaming ? "Waiting for response…" : "Type a message… (Enter to send, Shift+Enter for newline)"}
+            placeholder={streaming ? "Waiting for response…" : "Type a message… (/image <prompt> for image, Enter to send)"}
             rows={2}
             className="flex-1 px-3 py-2 rounded-xl bg-gray-800 border border-gray-700 text-gray-100 text-sm placeholder-gray-500 focus:outline-none focus:border-indigo-500 resize-none disabled:opacity-50"
           />
