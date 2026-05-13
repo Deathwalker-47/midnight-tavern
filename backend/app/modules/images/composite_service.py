@@ -30,7 +30,6 @@ from typing import Any
 import structlog
 from sqlalchemy import select
 
-from app.db.session import AsyncSessionLocal
 from app.modules.characters.models import Character
 from app.modules.images.composer import (
     LAYOUT_NAMES,
@@ -79,21 +78,36 @@ async def _pick_pose(
     character_id: uuid.UUID,
     rec: PoseRecommendation,
 ) -> CharacterPose | None:
-    """Lookup the pose by exact match; fall back to same-pose any-expression."""
-    query = select(CharacterPose).where(
-        CharacterPose.character_id == character_id,
-        CharacterPose.pose_slug == rec.pose_slug,
-        CharacterPose.expression_slug == rec.expression_slug,
-        CharacterPose.facing == rec.facing,
+    """Lookup the pose by exact match; fall back to same-pose any-expression.
+
+    A single character can have rows under multiple ``lora_version`` tags
+    (after retraining). We always prefer the newest row, so the lookup orders
+    by ``generated_at DESC`` and takes the first match — using
+    ``scalar_one_or_none`` here would raise ``MultipleResultsFound`` and the
+    composite job would fail spuriously.
+    """
+    query = (
+        select(CharacterPose)
+        .where(
+            CharacterPose.character_id == character_id,
+            CharacterPose.pose_slug == rec.pose_slug,
+            CharacterPose.expression_slug == rec.expression_slug,
+            CharacterPose.facing == rec.facing,
+        )
+        .order_by(CharacterPose.generated_at.desc())
     )
     result = await db.execute(query)
-    pose = result.scalar_one_or_none()
+    pose = result.scalars().first()
     if pose is not None:
         return pose
     # Same pose, any expression/facing.
-    query = select(CharacterPose).where(
-        CharacterPose.character_id == character_id,
-        CharacterPose.pose_slug == rec.pose_slug,
+    query = (
+        select(CharacterPose)
+        .where(
+            CharacterPose.character_id == character_id,
+            CharacterPose.pose_slug == rec.pose_slug,
+        )
+        .order_by(CharacterPose.generated_at.desc())
     )
     result = await db.execute(query)
     pose = result.scalars().first()
@@ -101,7 +115,9 @@ async def _pick_pose(
         return pose
     # Any pose for this character — last resort.
     result = await db.execute(
-        select(CharacterPose).where(CharacterPose.character_id == character_id)
+        select(CharacterPose)
+        .where(CharacterPose.character_id == character_id)
+        .order_by(CharacterPose.generated_at.desc())
     )
     return result.scalars().first()
 
@@ -156,6 +172,12 @@ async def _try_img2img(
 
 async def run_composite_job(job_id: uuid.UUID) -> None:
     """Execute a queued composite job."""
+    # Lazy-import so the conftest's ``monkeypatch.setattr(session_module,
+    # "AsyncSessionLocal", session_maker)`` is honored on each test (the
+    # alternative — caching the symbol at module import — leaves a stale
+    # binding once the first test's fixture tears down).
+    from app.db.session import AsyncSessionLocal
+
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(ImageJob).where(ImageJob.id == job_id))
         job = result.scalar_one_or_none()
@@ -188,8 +210,21 @@ async def run_composite_job(job_id: uuid.UUID) -> None:
                 await _fail(db, job, "no_backdrops", "backdrop library is empty")
                 return
 
+            # Index classifier output by character_id — LLM order isn't
+            # guaranteed to match the request order (Codex review P2). For any
+            # character the classifier omitted, fall back to a neutral pose
+            # recommendation so we still produce a usable composite.
+            rec_by_cid: dict[str, PoseRecommendation] = {
+                rec.character_id: rec for rec in classification.poses
+            }
             poses: list[CharacterPose] = []
-            for cid, rec in zip(character_ids, classification.poses, strict=False):
+            for cid in character_ids:
+                rec = rec_by_cid.get(str(cid)) or PoseRecommendation(
+                    character_id=str(cid),
+                    pose_slug="standing_neutral",
+                    expression_slug="neutral",
+                    facing="forward",
+                )
                 pose = await _pick_pose(db, cid, rec)
                 if pose is None:
                     await _fail(

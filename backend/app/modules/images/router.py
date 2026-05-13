@@ -13,6 +13,7 @@ from app.core.errors import AppError
 from app.db.session import get_db
 from app.modules.auth.models import User
 from app.modules.auth.service import get_current_user
+from app.modules.characters.service import get_character
 from app.modules.chats.service import get_chat
 from app.modules.images.models import Backdrop, CharacterPose
 from app.modules.images.schemas import (
@@ -165,6 +166,19 @@ async def composite(
             status_code=400,
             error_code="invalid_character_count",
         )
+    # Object-level authz: each character must be owned by the caller or
+    # marked public. ``get_character`` raises 404 otherwise.
+    seen: set[uuid.UUID] = set()
+    for cid in body.character_ids:
+        if cid in seen:
+            raise AppError(
+                "duplicate character_id in composite request",
+                status_code=400,
+                error_code="duplicate_character_id",
+            )
+        seen.add(cid)
+        await get_character(db, cid, current_user.id)
+
     from app.core.config import settings as _settings
 
     job = await create_and_queue_composite_job(

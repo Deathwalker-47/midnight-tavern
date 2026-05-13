@@ -166,3 +166,65 @@ async def test_composite_endpoint_rejects_zero_characters(client, unique_usernam
         json={"scene_description": "empty room", "character_ids": []},
     )
     assert res.status_code == 422  # Pydantic min_length validation
+
+
+@pytest.mark.asyncio
+async def test_composite_endpoint_rejects_unowned_character(
+    client, unique_username, session_maker, tmp_path
+):
+    """Codex P1: composite endpoint must reject character_ids the caller can't see."""
+    from app.modules.characters.models import Character
+    from app.modules.images import storage as storage_mod
+
+    storage_mod.reset_storage_for_tests()
+
+    await _register_and_login(client, unique_username)
+    my_char = uuid.UUID(await _create_character(client, "Mine"))
+
+    # Seed a private character owned by a different user.
+    other_user_id = uuid.uuid4()
+    other_char_id = uuid.uuid4()
+    async with session_maker() as session:
+        session.add(
+            Character(
+                id=other_char_id,
+                user_id=other_user_id,
+                name="Not Mine",
+                description="x",
+                personality="x",
+                system_prompt="x",
+                tags=[],
+                is_public=False,
+            )
+        )
+        await session.commit()
+
+    # Seed assets so the request would otherwise succeed.
+    await _seed_backdrop_and_poses(session_maker, tmp_path, [my_char, other_char_id])
+
+    res = await client.post(
+        "/api/v1/images/composite",
+        json={
+            "scene_description": "tavern at night",
+            "character_ids": [str(my_char), str(other_char_id)],
+        },
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "character_not_found"
+
+
+@pytest.mark.asyncio
+async def test_composite_endpoint_rejects_duplicate_character_ids(
+    client, unique_username
+):
+    await _register_and_login(client, unique_username)
+    cid = await _create_character(client, "Char")
+    res = await client.post(
+        "/api/v1/images/composite",
+        json={
+            "scene_description": "twin scene",
+            "character_ids": [cid, cid],
+        },
+    )
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "duplicate_character_id"
