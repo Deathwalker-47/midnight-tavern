@@ -20,6 +20,7 @@ import { RollBar } from "../components/chat/RollBar";
 import { useDMStore, handleDMEvent, type DMEvalResult, type DMRoll } from "../store/dmStore";
 import { dmApi, type StatDefinition } from "../api/dm";
 import { imagesApi } from "../api/images";
+import { useAuthStore } from "../store/authStore";
 import { ImageCard } from "../components/chat/ImageCard";
 import { ImagePrefToggle } from "../components/chat/ImagePrefToggle";
 
@@ -87,6 +88,12 @@ export function ChatPage() {
   >([]);
   const [illustrating, setIllustrating] = useState(false);
   const [hqRendering, setHqRendering] = useState(false);
+  // Hide the manual image-render buttons when the user has disabled images.
+  // The backend also returns 403 in this state — this gating is just UX so
+  // the buttons aren't there to click in the first place.
+  const imagesEnabled = useAuthStore(
+    (s) => (s.user?.image_pref ?? "auto") !== "never",
+  );
   // Answer input state
   const [answerInput, setAnswerInput] = useState("");
   const [answerSubmitting, setAnswerSubmitting] = useState(false);
@@ -238,11 +245,17 @@ export function ChatPage() {
                 },
               });
             } else if (type === "dm_stat_update") {
-              const changes = (data.changes as Array<{name: string; display_name: string; old_value: number | string; new_value: number | string; delta: number | null}>) ?? [];
-              if (changes.length > 0) {
+              const raw = (data.changes as Array<{name: string; display_name: string; old_value: number | string; new_value: number | string; delta: number | null}>) ?? [];
+              if (raw.length > 0) {
                 pushDMEvent({
                   kind: "stat_update",
-                  changes,
+                  changes: raw.map((c) => ({
+                    name: c.name,
+                    displayName: c.display_name,
+                    oldValue: c.old_value,
+                    newValue: c.new_value,
+                    delta: c.delta,
+                  })),
                   deathState: data.death_state as boolean | undefined,
                 });
               }
@@ -371,7 +384,7 @@ export function ChatPage() {
           ))}
 
           {/* Illustrate the current scene as a Tier-3 composite + HQ render */}
-          {character && messages.length > 0 && (
+          {character && messages.length > 0 && imagesEnabled && (
             <div className="flex justify-start gap-2">
               <button
                 type="button"

@@ -31,7 +31,6 @@ export function DMPanel({ statSchema }: Props) {
     isActive,
     stats,
     inventory,
-    skills,
     spells,
     description,
     rolls,

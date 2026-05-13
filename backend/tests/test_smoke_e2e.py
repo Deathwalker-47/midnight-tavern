@@ -476,3 +476,60 @@ async def test_image_pref_never_blocks_dispatch(
     msgs = res.json()["messages"]
     char_msgs = [m for m in msgs if m["role"] == "character"]
     assert all("[SCENE_BEAT" not in m["content"] for m in char_msgs)
+
+
+async def test_image_pref_never_blocks_manual_endpoints(
+    client, unique_username, tmp_path
+):
+    """User sets image_pref=never → POST /composite and /generate_hq both
+    return 403 ``images_disabled``. This catches manual triggers that bypass
+    the streaming marker-driven path."""
+    from app.core import config as config_mod
+    from app.modules.images import storage as storage_mod
+
+    config_mod.settings.IMAGES_STORAGE_DIR = str(tmp_path / "no-manual-imgs")
+    storage_mod.reset_storage_for_tests()
+
+    await _register_and_login(client, unique_username)
+    await _set_image_pref(client, "never")
+
+    res = await client.post(
+        "/api/v1/characters",
+        json={
+            "name": "Mara",
+            "description": "A traveling cleric.",
+            "personality": "Kind.",
+            "system_prompt": "You are Mara.",
+            "tags": [],
+        },
+    )
+    assert res.status_code == 201
+    character_id = res.json()["id"]
+
+    res = await client.post(
+        "/api/v1/images/composite",
+        json={
+            "scene_description": "Mara prays at dawn.",
+            "character_ids": [character_id],
+        },
+    )
+    assert res.status_code == 403, res.text
+    assert res.json()["error"]["code"] == "images_disabled"
+
+    res = await client.post(
+        "/api/v1/images/generate_hq",
+        json={"prompt": "Mara at dawn", "character_id": character_id},
+    )
+    assert res.status_code == 403, res.text
+    assert res.json()["error"]["code"] == "images_disabled"
+
+    # /generate (single-character Tier 2) remains open — it's the underlying
+    # text-to-image surface that the chat router uses for marker dispatch.
+    # If we 403'd that too, the marker path would also break. The toggle's
+    # job is to suppress *auto* dispatch via select_tier; manual /generate
+    # is explicit user intent and should still work.
+    res = await client.post(
+        "/api/v1/images/generate",
+        json={"prompt": "test"},
+    )
+    assert res.status_code == 201, res.text

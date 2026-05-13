@@ -291,15 +291,19 @@ export function DMConfigEditorPage() {
     setSaving(true);
     setError(null);
     try {
+      // The Ruleset API declares these optional fields as `string | null`, not
+      // `string | undefined`. Coerce empty strings to null so the payload
+      // matches the interface — sending undefined would type-check against a
+      // partial body but fail the create endpoint, which expects null.
       const payload = {
         ...form,
-        description: form.description || undefined,
-        rules_text: form.rules_text || undefined,
-        reminder_text: form.reminder_text || undefined,
-        instruction: form.instruction || undefined,
-        player_guide: form.player_guide || undefined,
-        recommended_model: form.recommended_model || undefined,
-        recommended_provider: form.recommended_provider || undefined,
+        description: form.description || null,
+        rules_text: form.rules_text || null,
+        reminder_text: form.reminder_text || null,
+        instruction: form.instruction || null,
+        player_guide: form.player_guide || null,
+        recommended_model: form.recommended_model || null,
+        recommended_provider: form.recommended_provider || null,
       };
       if (isEdit && configId) {
         await dmApi.updateRuleset(configId, payload);
