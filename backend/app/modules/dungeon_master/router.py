@@ -6,14 +6,17 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.errors import AppError
 from app.db.session import get_db
+from app.modules.auth.models import User
+from app.modules.auth.service import get_current_user
+from app.modules.chats.service import get_chat
 from app.modules.dungeon_master.dice import parse_and_roll
 from app.modules.dungeon_master.models import (
     CharacterSheet,
@@ -54,15 +57,37 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/dm", tags=["dungeon-master"])
 
 
+# ── Ownership helper ──────────────────────────────────────────────────────────
+
+
+async def _get_session_owned(
+    db: AsyncSession, session_id: uuid.UUID, user_id: uuid.UUID
+) -> DMSession:
+    """Fetch a DM session and verify its chat belongs to the user."""
+    result = await db.execute(
+        select(DMSession)
+        .options(selectinload(DMSession.ruleset))
+        .where(DMSession.id == session_id, DMSession.deleted_at.is_(None))
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise AppError("Session not found", status_code=404, error_code="session_not_found")
+    # Validate chat ownership (raises 404 if not owned)
+    await get_chat(db, session.chat_id, user_id)
+    return session
+
+
 # ── Game Rulesets ─────────────────────────────────────────────────────────────
 
 
 @router.post("/rulesets", response_model=RulesetResponse, status_code=status.HTTP_201_CREATED)
 async def create_ruleset(
     body: CreateRulesetRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RulesetResponse:
     ruleset = GameRuleset(
+        user_id=current_user.id,
         name=body.name,
         description=body.description,
         stat_schema=[s.model_dump() for s in body.stat_schema],
@@ -86,11 +111,16 @@ async def create_ruleset(
 
 @router.get("/rulesets", response_model=list[RulesetResponse])
 async def list_rulesets(
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[RulesetResponse]:
+    """List rulesets owned by the user plus public ones."""
     result = await db.execute(
         select(GameRuleset)
-        .where(GameRuleset.deleted_at.is_(None))
+        .where(
+            GameRuleset.deleted_at.is_(None),
+            or_(GameRuleset.user_id == current_user.id, GameRuleset.is_public.is_(True)),
+        )
         .order_by(GameRuleset.created_at.desc())
     )
     return [RulesetResponse.model_validate(r) for r in result.scalars().all()]
@@ -98,6 +128,7 @@ async def list_rulesets(
 
 @router.get("/rulesets/public", response_model=list[RulesetResponse])
 async def list_public_rulesets(
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[RulesetResponse]:
     result = await db.execute(
@@ -111,12 +142,14 @@ async def list_public_rulesets(
 @router.get("/rulesets/{ruleset_id}", response_model=RulesetResponse)
 async def get_ruleset(
     ruleset_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RulesetResponse:
     result = await db.execute(
         select(GameRuleset).where(
             GameRuleset.id == ruleset_id,
             GameRuleset.deleted_at.is_(None),
+            or_(GameRuleset.user_id == current_user.id, GameRuleset.is_public.is_(True)),
         )
     )
     ruleset = result.scalar_one_or_none()
@@ -129,11 +162,13 @@ async def get_ruleset(
 async def update_ruleset(
     ruleset_id: uuid.UUID,
     body: UpdateRulesetRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RulesetResponse:
     result = await db.execute(
         select(GameRuleset).where(
             GameRuleset.id == ruleset_id,
+            GameRuleset.user_id == current_user.id,
             GameRuleset.deleted_at.is_(None),
         )
     )
@@ -178,11 +213,13 @@ async def update_ruleset(
 @router.delete("/rulesets/{ruleset_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_ruleset(
     ruleset_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     result = await db.execute(
         select(GameRuleset).where(
             GameRuleset.id == ruleset_id,
+            GameRuleset.user_id == current_user.id,
             GameRuleset.deleted_at.is_(None),
         )
     )
@@ -197,12 +234,14 @@ async def delete_ruleset(
 @router.post("/rulesets/{ruleset_id}/duplicate", response_model=RulesetResponse, status_code=status.HTTP_201_CREATED)
 async def duplicate_ruleset(
     ruleset_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RulesetResponse:
     result = await db.execute(
         select(GameRuleset).where(
             GameRuleset.id == ruleset_id,
             GameRuleset.deleted_at.is_(None),
+            or_(GameRuleset.user_id == current_user.id, GameRuleset.is_public.is_(True)),
         )
     )
     source = result.scalar_one_or_none()
@@ -224,7 +263,7 @@ async def duplicate_ruleset(
         context_window=source.context_window,
         enforcement_config=dict(source.enforcement_config),
         is_public=False,
-        user_id=source.user_id,
+        user_id=current_user.id,
     )
     db.add(clone)
     await db.commit()
@@ -238,12 +277,17 @@ async def duplicate_ruleset(
 @router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(
     body: CreateSessionRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
+    # Verify the chat belongs to the user
+    await get_chat(db, body.chat_id, current_user.id)
+
     ruleset_result = await db.execute(
         select(GameRuleset).where(
             GameRuleset.id == body.ruleset_id,
             GameRuleset.deleted_at.is_(None),
+            or_(GameRuleset.user_id == current_user.id, GameRuleset.is_public.is_(True)),
         )
     )
     if ruleset_result.scalar_one_or_none() is None:
@@ -263,8 +307,10 @@ async def create_session(
 @router.get("/sessions/{chat_id}", response_model=SessionResponse)
 async def get_session(
     chat_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
+    await get_chat(db, chat_id, current_user.id)
     session = await get_session_by_chat(db, chat_id)
     if session is None:
         raise AppError("No active DM session for this chat", status_code=404, error_code="session_not_found")
@@ -274,18 +320,10 @@ async def get_session(
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(
     session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    result = await db.execute(
-        select(DMSession).where(
-            DMSession.id == session_id,
-            DMSession.deleted_at.is_(None),
-        )
-    )
-    session = result.scalar_one_or_none()
-    if session is None:
-        raise AppError("Session not found", status_code=404, error_code="session_not_found")
-
+    session = await _get_session_owned(db, session_id, current_user.id)
     session.deleted_at = datetime.now(timezone.utc)
     await db.commit()
 
@@ -296,8 +334,10 @@ async def delete_session(
 @router.get("/sessions/{session_id}/sheet", response_model=list[CharacterSheetResponse])
 async def list_sheets(
     session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[CharacterSheetResponse]:
+    await _get_session_owned(db, session_id, current_user.id)
     result = await db.execute(
         select(CharacterSheet).where(CharacterSheet.session_id == session_id)
     )
@@ -308,16 +348,10 @@ async def list_sheets(
 async def create_sheet(
     session_id: uuid.UUID,
     body: CreateSheetRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CharacterSheetResponse:
-    result = await db.execute(
-        select(DMSession)
-        .options(selectinload(DMSession.ruleset))
-        .where(DMSession.id == session_id, DMSession.deleted_at.is_(None))
-    )
-    session = result.scalar_one_or_none()
-    if session is None:
-        raise AppError("Session not found", status_code=404, error_code="session_not_found")
+    await _get_session_owned(db, session_id, current_user.id)
 
     sheet = CharacterSheet(
         session_id=session_id,
@@ -340,8 +374,10 @@ async def update_sheet(
     session_id: uuid.UUID,
     sheet_id: uuid.UUID,
     body: UpdateSheetRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> CharacterSheetResponse:
+    await _get_session_owned(db, session_id, current_user.id)
     result = await db.execute(
         select(CharacterSheet).where(
             CharacterSheet.id == sheet_id,
@@ -375,17 +411,10 @@ async def update_sheet(
 async def manual_roll(
     session_id: uuid.UUID,
     body: RollRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RollResponse:
-    session_result = await db.execute(
-        select(DMSession).where(
-            DMSession.id == session_id,
-            DMSession.deleted_at.is_(None),
-        )
-    )
-    session = session_result.scalar_one_or_none()
-    if session is None:
-        raise AppError("Session not found", status_code=404, error_code="session_not_found")
+    await _get_session_owned(db, session_id, current_user.id)
 
     try:
         result = parse_and_roll(body.expression)
@@ -424,8 +453,10 @@ async def list_rolls(
     session_id: uuid.UUID,
     limit: int = 20,
     offset: int = 0,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RollListResponse:
+    await _get_session_owned(db, session_id, current_user.id)
     count_result = await db.execute(
         select(func.count()).select_from(DMRoll).where(DMRoll.session_id == session_id)
     )
@@ -447,8 +478,10 @@ async def list_rolls(
 @router.get("/sessions/{session_id}/rolls/stats", response_model=RollStatsResponse)
 async def roll_stats(
     session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RollStatsResponse:
+    await _get_session_owned(db, session_id, current_user.id)
     """Aggregate roll statistics for a session."""
     result = await db.execute(
         select(
@@ -497,8 +530,10 @@ async def list_events(
     session_id: uuid.UUID,
     limit: int = 20,
     offset: int = 0,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GameEventListResponse:
+    await _get_session_owned(db, session_id, current_user.id)
     count_result = await db.execute(
         select(func.count()).select_from(GameEvent).where(GameEvent.session_id == session_id)
     )
@@ -521,8 +556,10 @@ async def list_events(
 async def get_event(
     session_id: uuid.UUID,
     event_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GameEventResponse:
+    await _get_session_owned(db, session_id, current_user.id)
     result = await db.execute(
         select(GameEvent).where(
             GameEvent.id == event_id,
@@ -539,9 +576,11 @@ async def get_event(
 async def answer_question(
     session_id: uuid.UUID,
     body: AnswerQuestionRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GameEventResponse:
     """Store the player's answer to a DM ask_player question."""
+    await _get_session_owned(db, session_id, current_user.id)
     result = await db.execute(
         select(GameEvent).where(
             GameEvent.id == body.event_id,
@@ -565,8 +604,11 @@ async def answer_question(
 @router.post("/attachments", response_model=AttachmentResponse, status_code=status.HTTP_201_CREATED)
 async def create_attachment(
     body: CreateAttachmentRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AttachmentResponse:
+    if body.chat_id is not None:
+        await get_chat(db, body.chat_id, current_user.id)
     if body.character_id is None and body.chat_id is None:
         raise AppError(
             "Either character_id or chat_id must be provided",
@@ -584,6 +626,7 @@ async def create_attachment(
         select(GameRuleset).where(
             GameRuleset.id == body.ruleset_id,
             GameRuleset.deleted_at.is_(None),
+            or_(GameRuleset.user_id == current_user.id, GameRuleset.is_public.is_(True)),
         )
     )
     if ruleset_result.scalar_one_or_none() is None:
@@ -603,10 +646,18 @@ async def create_attachment(
 
 @router.get("/attachments", response_model=list[AttachmentResponse])
 async def list_attachments(
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[AttachmentResponse]:
+    """List attachments owned by the user (i.e. that reference one of their rulesets)."""
     result = await db.execute(
-        select(DMConfigAttachment).order_by(DMConfigAttachment.created_at.desc())
+        select(DMConfigAttachment)
+        .join(GameRuleset, GameRuleset.id == DMConfigAttachment.ruleset_id)
+        .where(
+            or_(GameRuleset.user_id == current_user.id, GameRuleset.is_public.is_(True)),
+            GameRuleset.deleted_at.is_(None),
+        )
+        .order_by(DMConfigAttachment.created_at.desc())
     )
     return [AttachmentResponse.model_validate(a) for a in result.scalars().all()]
 
@@ -614,10 +665,16 @@ async def list_attachments(
 @router.delete("/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_attachment(
     attachment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     result = await db.execute(
-        select(DMConfigAttachment).where(DMConfigAttachment.id == attachment_id)
+        select(DMConfigAttachment)
+        .join(GameRuleset, GameRuleset.id == DMConfigAttachment.ruleset_id)
+        .where(
+            DMConfigAttachment.id == attachment_id,
+            GameRuleset.user_id == current_user.id,
+        )
     )
     attachment = result.scalar_one_or_none()
     if attachment is None:
@@ -634,17 +691,11 @@ async def delete_attachment(
 async def evaluate(
     session_id: uuid.UUID,
     body: EvaluateRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Trigger the DM agent to evaluate a player action (SSE stream)."""
-    result = await db.execute(
-        select(DMSession)
-        .options(selectinload(DMSession.ruleset))
-        .where(DMSession.id == session_id, DMSession.deleted_at.is_(None))
-    )
-    session = result.scalar_one_or_none()
-    if session is None:
-        raise AppError("Session not found", status_code=404, error_code="session_not_found")
+    session = await _get_session_owned(db, session_id, current_user.id)
 
     sheet = await get_or_create_sheet(db, session, body.character_id)
 
