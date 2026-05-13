@@ -47,9 +47,24 @@ jobs:
     name: playwright e2e
     runs-on: ubuntu-latest
     continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tavern
+          POSTGRES_PASSWORD: tavern
+          POSTGRES_DB: tavern_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tavern -d tavern_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
-      # Hermetic backend: SQLite + dummy image provider, no Redis required.
-      DATABASE_URL: sqlite+aiosqlite:///./test.db
+      # Migrations 004+ use ALTER TABLE ADD CONSTRAINT, which SQLite can't
+      # do. Use a real Postgres so the schema matches production.
+      DATABASE_URL: postgresql+asyncpg://tavern:tavern@localhost:5432/tavern_e2e
       REDIS_URL: redis://localhost:6379/0
       SECRET_KEY: e2e-secret-do-not-use-anywhere-else
       CORS_ORIGINS: http://localhost:5173
