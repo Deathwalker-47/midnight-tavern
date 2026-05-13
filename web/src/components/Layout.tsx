@@ -29,6 +29,9 @@ export function Layout({ children }: Props) {
           <Link to="/chats" className="text-sm text-gray-400 hover:text-gray-200 transition-colors">
             Chats
           </Link>
+          <Link to="/backdrops" className="text-sm text-gray-400 hover:text-gray-200 transition-colors">
+            Backdrops
+          </Link>
         </nav>
         <div className="ml-auto flex items-center gap-3">
           {user ? (

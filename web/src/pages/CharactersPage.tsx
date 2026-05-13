@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { charactersApi, type Character, type CreateCharacterBody } from "../api/characters";
 import { chatsApi } from "../api/chats";
 import { ApiError } from "../api/client";
@@ -41,12 +41,21 @@ function CharacterCard({
           ))}
         </div>
       )}
-      <button
-        onClick={() => onChat(character.id)}
-        className="w-full py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm text-white font-medium transition-colors"
-      >
-        Chat
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onChat(character.id)}
+          className="flex-1 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm text-white font-medium transition-colors"
+        >
+          Chat
+        </button>
+        <Link
+          to={`/characters/${character.id}/poses`}
+          className="px-3 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+          title="Browse generated poses"
+        >
+          Poses
+        </Link>
+      </div>
     </div>
   );
 }
