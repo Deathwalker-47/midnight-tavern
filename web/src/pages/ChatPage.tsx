@@ -20,47 +20,8 @@ import { RollBar } from "../components/chat/RollBar";
 import { useDMStore, handleDMEvent, type DMEvalResult, type DMRoll } from "../store/dmStore";
 import { dmApi, type StatDefinition } from "../api/dm";
 import { imagesApi } from "../api/images";
-import { usersApi, type ImagePref } from "../api/users";
-import { useAuthStore } from "../store/authStore";
 import { ImageCard } from "../components/chat/ImageCard";
-
-// ── Image preference toggle ──────────────────────────────────────────────
-
-function ImagePrefToggle() {
-  const user = useAuthStore((s) => s.user);
-  const setUser = useAuthStore((s) => s.setUser);
-  const pref: ImagePref = (user?.image_pref ?? "auto") as ImagePref;
-  const cycle: Record<ImagePref, ImagePref> = {
-    auto: "always",
-    always: "never",
-    never: "auto",
-  };
-  const label: Record<ImagePref, string> = {
-    auto: "🪄 Images: Auto",
-    always: "🖼️ Images: Always",
-    never: "🚫 Images: Never",
-  };
-  async function onClick() {
-    const next = cycle[pref];
-    try {
-      const updated = await usersApi.updateProfile({ image_pref: next });
-      setUser(updated);
-    } catch {
-      // silently fail — user can retry
-    }
-  }
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title="Cycle through Auto / Always / Never image generation"
-      className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-    >
-      {label[pref]}
-    </button>
-  );
-}
-
+import { ImagePrefToggle } from "../components/chat/ImagePrefToggle";
 
 // ── Message bubble ────────────────────────────────────────────────────────────
 
