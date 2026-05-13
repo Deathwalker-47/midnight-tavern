@@ -12,7 +12,7 @@ Deferred to a later sprint: training (LoRA), lorebooks, moderation. Their empty 
 
 ## Approach
 
-Eleven mergeable PRs, ordered by hard dependencies. Each PR is small enough to review and lands a working slice.
+Sixteen mergeable PRs, ordered by hard dependencies. Each PR is small enough to review and lands a working slice.
 
 ---
 
