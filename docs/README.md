@@ -21,6 +21,7 @@ This is the single entry point for all project documentation and plans.
 - [`./plans/README.md`](./plans/README.md): central index for all plans.
 - [`./plans/PLAN_sprint_a_foundation_aggregation.md`](./plans/PLAN_sprint_a_foundation_aggregation.md): consolidated Sprint A plan.
 - [`./plans/PLAN_image_generation_architecture.md`](./plans/PLAN_image_generation_architecture.md): image generation architecture plan.
+- [`./plans/PLAN_sprint_a_completion_and_image_gen.md`](./plans/PLAN_sprint_a_completion_and_image_gen.md): executable PR-by-PR plan to finish Sprint A and the image generation pipeline.
 
 ## Rule for new documentation
 If a new plan or guide is added, update this file and `docs/plans/README.md` in the same PR.
