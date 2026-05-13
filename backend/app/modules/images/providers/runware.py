@@ -123,3 +123,64 @@ class RunwareProvider:
         image_bytes = await extract_image_bytes(result, "Runware")
         validate_image_bytes(image_bytes, "Runware")
         return image_bytes
+
+    async def generate_inpaint(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        loras: list[dict[str, Any]],
+        init_image_bytes: bytes,
+        mask_bytes: bytes,
+        strength: float,
+        steps: int,
+        params: dict[str, Any],
+    ) -> bytes:
+        """Masked inpaint pass for the HQ MultiCharPipeline (Phase 5).
+
+        Builds on the existing ``imageInference`` task — Runware accepts both
+        ``seedImage`` and ``maskImage`` together, treating the masked region
+        as the area to repaint. Matches the upstream
+        ``MultiCharPipeline._generate_pass`` flow in
+        Silly-Tavern-Flux-Bridge/flux_lora_bridge.py.
+        """
+        if not self.api_key:
+            raise ImageProviderError("RUNWARE_API_KEY not configured", transient=True)
+
+        seed_b64 = base64.b64encode(init_image_bytes).decode("ascii")
+        mask_b64 = base64.b64encode(mask_bytes).decode("ascii")
+        lora_payload = [{"model": l["url"], "weight": l.get("weight", 1.0)} for l in loras]
+
+        task: dict[str, Any] = {
+            "taskType": "imageInference",
+            "taskUUID": str(uuid.uuid4()),
+            "positivePrompt": prompt,
+            "negativePrompt": negative_prompt,
+            "model": self.model,
+            "steps": steps,
+            "CFGScale": params.get("cfg_scale", 3.5),
+            "height": params.get("height", 1024),
+            "width": params.get("width", 1024),
+            "numberResults": 1,
+            "outputFormat": "png",
+            "lora": lora_payload,
+            "seedImage": f"data:image/png;base64,{seed_b64}",
+            "maskImage": f"data:image/png;base64,{mask_b64}",
+            "strength": strength,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(self.endpoint, json=[task], headers=headers)
+        if resp.status_code != 200:
+            raise ImageProviderError(
+                f"Runware inpaint {resp.status_code}: {resp.text[:200]}",
+                transient=True,
+            )
+        result = resp.json()
+        image_bytes = await extract_image_bytes(result, "Runware")
+        validate_image_bytes(image_bytes, "Runware")
+        return image_bytes

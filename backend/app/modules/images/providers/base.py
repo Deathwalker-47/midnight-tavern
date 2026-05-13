@@ -35,6 +35,34 @@ class ImageProvider(Protocol):
         params: dict[str, Any],
     ) -> bytes: ...
 
+    # Optional methods. Providers that don't implement them should raise
+    # ``NotImplementedError`` so callers can fall back to the next provider
+    # in the chain (matches the pattern used by ``generate_img2img``).
+
+    async def generate_img2img(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        init_image_bytes: bytes,
+        strength: float,
+        steps: int,
+        lighting: dict[str, Any] | None = None,
+    ) -> bytes: ...
+
+    async def generate_inpaint(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        loras: list[dict[str, Any]],
+        init_image_bytes: bytes,
+        mask_bytes: bytes,
+        strength: float,
+        steps: int,
+        params: dict[str, Any],
+    ) -> bytes: ...
+
 
 # ── Shared payload helpers (ported from flux_lora_bridge.py) ─────────────────
 

@@ -125,6 +125,7 @@ export function ChatPage() {
     Array<{ jobId: string; prompt: string; kind: "single" | "composite" | "hq" }>
   >([]);
   const [illustrating, setIllustrating] = useState(false);
+  const [hqRendering, setHqRendering] = useState(false);
   // Answer input state
   const [answerInput, setAnswerInput] = useState("");
   const [answerSubmitting, setAnswerSubmitting] = useState(false);
@@ -408,9 +409,9 @@ export function ChatPage() {
             <ImageCard key={j.jobId} jobId={j.jobId} prompt={j.prompt} kind={j.kind} />
           ))}
 
-          {/* Illustrate the current scene as a Tier-3 composite */}
+          {/* Illustrate the current scene as a Tier-3 composite + HQ render */}
           {character && messages.length > 0 && (
-            <div className="flex justify-start">
+            <div className="flex justify-start gap-2">
               <button
                 type="button"
                 disabled={illustrating || streaming}
@@ -444,6 +445,41 @@ export function ChatPage() {
                 className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700 transition disabled:opacity-50"
               >
                 {illustrating ? "Illustrating…" : "🖼️ Illustrate scene"}
+              </button>
+              <button
+                type="button"
+                disabled={hqRendering || streaming}
+                title="High-quality multi-pass render. Takes 30–60s."
+                onClick={async () => {
+                  if (!chatId || !character) return;
+                  const lastAssistant = [...messages]
+                    .reverse()
+                    .find((m) => m.role !== "user");
+                  const prompt =
+                    lastAssistant?.content?.slice(0, 600) ?? "The current scene";
+                  setHqRendering(true);
+                  setError(null);
+                  try {
+                    const job = await imagesApi.generateHq({
+                      prompt,
+                      chat_id: chatId,
+                      character_id: character.id,
+                    });
+                    setImageJobs((prev) => [
+                      ...prev,
+                      { jobId: job.id, prompt, kind: "hq" },
+                    ]);
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : "HQ render request failed",
+                    );
+                  } finally {
+                    setHqRendering(false);
+                  }
+                }}
+                className="text-xs px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-900/40 to-purple-900/40 border border-amber-700/50 text-amber-200 hover:from-amber-800/40 hover:to-purple-800/40 transition disabled:opacity-50"
+              >
+                {hqRendering ? "Queuing HQ…" : "✨ HQ scene"}
               </button>
             </div>
           )}
