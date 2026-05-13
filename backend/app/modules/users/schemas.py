@@ -21,3 +21,5 @@ class ProviderKeyResponse(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=100)
+    # "auto" | "always" | "never". Drives the three-tier image router.
+    image_pref: str | None = Field(default=None, pattern=r"^(auto|always|never)$")

@@ -7,6 +7,7 @@ contains the entry.
 
 from __future__ import annotations
 
+import base64
 import uuid
 from typing import Any
 
@@ -67,6 +68,56 @@ class RunwareProvider:
         if resp.status_code != 200:
             raise ImageProviderError(
                 f"Runware API {resp.status_code}: {resp.text[:200]}", transient=True
+            )
+        result = resp.json()
+        image_bytes = await extract_image_bytes(result, "Runware")
+        validate_image_bytes(image_bytes, "Runware")
+        return image_bytes
+
+    async def generate_img2img(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        init_image_bytes: bytes,
+        strength: float,
+        steps: int,
+        lighting: dict[str, Any] | None = None,
+    ) -> bytes:
+        """Lighting unification pass for Tier 3 composites.
+
+        Sends ``seedImage`` + ``strength`` to Runware's imageInference task
+        with the same model. Strength is intentionally low (0.20-0.30) to
+        preserve composition while harmonising lighting/edges.
+        """
+        if not self.api_key:
+            raise ImageProviderError("RUNWARE_API_KEY not configured", transient=True)
+
+        seed_b64 = base64.b64encode(init_image_bytes).decode("ascii")
+        task: dict[str, Any] = {
+            "taskType": "imageInference",
+            "taskUUID": str(uuid.uuid4()),
+            "positivePrompt": prompt,
+            "negativePrompt": negative_prompt,
+            "model": self.model,
+            "steps": steps,
+            "CFGScale": 3.5,
+            "seedImage": f"data:image/png;base64,{seed_b64}",
+            "strength": strength,
+            "numberResults": 1,
+            "outputFormat": "png",
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(self.endpoint, json=[task], headers=headers)
+        if resp.status_code != 200:
+            raise ImageProviderError(
+                f"Runware img2img {resp.status_code}: {resp.text[:200]}",
+                transient=True,
             )
         result = resp.json()
         image_bytes = await extract_image_bytes(result, "Runware")

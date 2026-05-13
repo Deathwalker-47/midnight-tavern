@@ -1,0 +1,4 @@
+{
+  "_doc": "Reverse mapping from Runware shorthand IDs (e.g. 'deathwalker:nimya@1') to original public URLs for non-Runware provider fallback. Populate when uploading LoRAs to Runware. See lora.py:provider_url_with_fallback.",
+  "mappings": {}
+}

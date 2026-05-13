@@ -10,6 +10,9 @@ export interface AuthUser {
   username: string;
   email: string;
   display_name: string | null;
+  // Three-tier image router preference. "auto" = LLM marker-driven (default);
+  // "always" = generate on every assistant message; "never" = manual only.
+  image_pref?: "auto" | "always" | "never";
 }
 
 interface AuthState {

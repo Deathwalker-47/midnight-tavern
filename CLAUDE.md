@@ -14,6 +14,16 @@ Character/roleplay chat web app. SillyTavern-inspired with multi-LLM support, in
 ## Architecture
 Modular monolith. Single API + single web frontend. Internal module boundaries that map cleanly to services later.
 
+### Three-Tier Image Generation
+Image generation is **gated**, not produced on every turn. See `docs/plans/PLAN_image_generation_architecture.md` for the full design.
+
+- **Tier 1 — text only** (default, ~70% of turns): no image.
+- **Tier 2 — single character** (~25%): existing flow in `backend/app/modules/images/` (provider chain Runware→Wavespeed→FAL→Together, LoRA matching, prompt builder). Endpoint: `POST /api/v1/images/generate`.
+- **Tier 3 — cached composite** (~5%): cached backdrops + transparent character poses composited at runtime with a low-strength img2img lighting unification pass. Endpoint: `POST /api/v1/images/composite`.
+- **HQ async path**: `POST /api/v1/images/generate_hq` — placeholder for future `MultiCharPipeline` sequential-inpainting port.
+
+Tier selection is driven by `[SCENE_BEAT:single|multi|none]` markers emitted by the story LLM and stripped before user-visible storage; user pref `image_pref` (`auto`/`always`/`never`) overrides. Heuristic fallback in `backend/app/modules/images/tier_router.py`.
+
 ## Code Conventions
 - API routes: /api/v1/...
 - Error shape: { "error": { "code": "...", "message": "...", "details": ... }, "request_id": "..." }
@@ -115,6 +125,17 @@ New frontend:
 - web/src/components/chat/RollBar.tsx — roll outcomes + stat diffs below assistant messages
 - web/src/pages/DMConfigEditorPage.tsx — full ruleset editor with stat schema builder
 
+## Sprint B — Three-Tier Image Pipeline
+Implements `docs/plans/PLAN_image_generation_architecture.md` (the new three-tier architecture). Phases 1–5; Phase 6 (video) deferred.
+
+### Task Queue
+1. [x] Phase 0: archive old v1 image plan, add new three-tier plan, update CLAUDE.md.
+2. [ ] Phase 1: Tier 2 hardening — per-provider `asyncio.wait_for` timeouts + chain-level validation, request-level cache (Redis/in-memory), drop permanent LoRAs to `realism` only, provider-URL reverse-lookup fallback via `runware_lora_mapping.json`, new config knobs.
+3. [ ] Phase 2: Tier 3 foundation — migration 005 (`backdrops`, `character_poses`, `scene_composites`), ORM models, background-removal wrapper (rembg), `backdrop_specs.yaml`, `pose_matrix.yaml`, backdrop + pose ARQ workers + CLI, S3CompatibleStorage skeleton, `/backdrops` + `/characters/{id}/poses` list endpoints.
+4. [ ] Phase 3: Tier 3 hot path — `img2img` provider methods (Runware first), scene classifier (Anthropic Haiku), PIL composer with 2/3/4/5-char layouts, `POST /api/v1/images/composite` orchestrator with `scene_composites` hash cache, `job_kind` column (migration 006), Illustrate Scene button.
+5. [ ] Phase 4: Tier routing — streaming `[SCENE_BEAT:*]` marker parser in chat SSE, system prompt update, `tier_router.py`, `users.image_pref` column (migration 007), frontend Auto/Always/Never toggle.
+6. [ ] Phase 5: HQ endpoint — `POST /api/v1/images/generate_hq` (fallback to single-char path until `MultiCharPipeline` ported), frontend HQ button.
+
 ### Completed
 - [x] Project scaffold and GitHub repo created
 - [x] Dungeon Master AI module scaffold
@@ -129,3 +150,4 @@ Read docs/bootstrap-troubleshooting.md for known environment issues and fixes. U
 - 2026-02-22: Bootstrap started. Repo created, scaffold built, starting Sprint A.
 - 2026-04-22: Dungeon Master AI module scaffolded. Full backend module + frontend components ready. Awaits DB migration after task 2 (database setup) is complete.
 - 2026-05-04: Module 8 (Full Gatekeeper Game Engine) complete. Pre-validation layer, enforcement config, is_alive permadeath, game_events table, dm_config_attachments, context injector, pipeline interface, 8 new API endpoints, DMConfigEditorPage, RollBar component, answer input, DM settings link.
+- 2026-05-13: Sprint B opened. Three-tier image generation architecture plan landed (`docs/plans/PLAN_image_generation_architecture.md`); v1 single-tier plan archived. Sprint B implements Phases 1–5: Tier 2 hardening, Tier 3 cached composites, `[SCENE_BEAT:*]` marker routing, HQ endpoint scaffolding.

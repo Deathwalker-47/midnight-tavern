@@ -24,6 +24,7 @@ class UserResponse(BaseModel):
     email: str
     display_name: str | None
     is_active: bool
+    image_pref: str = "auto"
     created_at: datetime
 
     model_config = {"from_attributes": True}

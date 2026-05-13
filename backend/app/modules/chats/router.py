@@ -46,6 +46,17 @@ from app.modules.dungeon_master.service import (
 )
 from app.modules.dungeon_master.schemas import DMVerdict
 from app.modules.dungeon_master.pre_validator import PreValidator
+from app.modules.images.service import (
+    create_and_queue_composite_job,
+    create_and_queue_job,
+)
+from app.modules.images.tier_router import (
+    SYSTEM_PROMPT_APPENDIX,
+    ImagePref,
+    MarkerStreamStripper,
+    Tier,
+    select_tier,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -256,9 +267,18 @@ async def send_message(
         )
         if extra_system:
             system_parts.append(f"\n{extra_system}")
+        # Append the SCENE_BEAT marker convention for the three-tier image router.
+        try:
+            user_pref = ImagePref(current_user.image_pref)
+        except ValueError:
+            user_pref = ImagePref.auto
+        if user_pref != ImagePref.never:
+            system_parts.append(SYSTEM_PROMPT_APPENDIX)
         system = "\n".join(system_parts)
 
-        full_response = ""
+        full_response = ""  # full text including any markers (for storage)
+        visible_response = ""  # markers stripped (for chat UI + stored msg)
+        stripper = MarkerStreamStripper()
         try:
             async for token in provider.stream(
                 messages=provider_messages,
@@ -266,18 +286,25 @@ async def send_message(
                 model="claude-sonnet-4-6",
             ):
                 full_response += token
-                yield f"event: token\ndata: {json.dumps({'text': token})}\n\n"
+                safe = stripper.feed(token)
+                if safe:
+                    visible_response += safe
+                    yield f"event: token\ndata: {json.dumps({'text': safe})}\n\n"
+            tail = stripper.flush()
+            if tail:
+                visible_response += tail
+                yield f"event: token\ndata: {json.dumps({'text': tail})}\n\n"
         except Exception as exc:
             logger.error("stream_error", exc_info=exc, chat_id=str(chat_id))
             yield f"event: error\ndata: {json.dumps({'code': 'stream_error', 'message': str(exc)})}\n\n"
             return
 
-        # Store assistant message
+        # Store assistant message — without markers.
         ai_msg = await store_message(
             db,
             chat_id=chat_id,
             role=MessageRole.character,
-            content=full_response,
+            content=visible_response,
         )
 
         # Auto-title chat from first exchange
@@ -285,7 +312,56 @@ async def send_message(
             chat.title = body.content[:80]
             await db.commit()
 
-        yield f"event: done\ndata: {json.dumps({'message_id': str(ai_msg.id), 'content': full_response})}\n\n"
+        # Decide whether to dispatch an image job based on marker + user pref.
+        marker_tier = stripper.consumed_marker
+        decision = select_tier(
+            f"[SCENE_BEAT:{marker_tier.value}] {visible_response}" if marker_tier else visible_response,
+            active_character_count=1,  # midnight-tavern chats are 1:1 today
+            user_pref=user_pref,
+        )
+        if decision.tier in (Tier.single, Tier.multi):
+            try:
+                if decision.tier == Tier.single:
+                    image_job = await create_and_queue_job(
+                        db,
+                        user_id=current_user.id,
+                        prompt=visible_response[:600],
+                        negative_prompt=None,
+                        chat_id=chat_id,
+                        character_id=character.id,
+                        width=1024,
+                        height=1024,
+                        steps=40,
+                        cfg_scale=4,
+                        seed=None,
+                    )
+                else:
+                    image_job = await create_and_queue_composite_job(
+                        db,
+                        user_id=current_user.id,
+                        scene_description=visible_response[:600],
+                        character_ids=[character.id],
+                        chat_id=chat_id,
+                        width=1536,
+                        height=1024,
+                        seed=None,
+                    )
+                yield (
+                    "event: image_dispatched\n"
+                    "data: "
+                    + json.dumps(
+                        {
+                            "job_id": str(image_job.id),
+                            "tier": decision.tier.value,
+                            "source": decision.source,
+                        }
+                    )
+                    + "\n\n"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("image_dispatch_failed", error=str(exc))
+
+        yield f"event: done\ndata: {json.dumps({'message_id': str(ai_msg.id), 'content': visible_response})}\n\n"
 
     return StreamingResponse(
         event_stream(),

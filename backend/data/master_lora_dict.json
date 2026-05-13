@@ -2,8 +2,7 @@
   "config": {
     "default_steps": 40,
     "default_guidance_scale": 3.5,
-    "permanent_loras": [
-    ],
+    "permanent_loras": ["realism"],
     "default_negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy, bad proportions, watermark, signature, text"
   },
   "loras": {
@@ -86,8 +85,8 @@
       "prepend_prompt": "",
       "append_prompt": "anatomically correct, proper proportions",
       "negative_prompt": "deformed hands, extra fingers, missing fingers",
-      "notes": "Use weight 0.1-0.9 based on severity of anatomical issues",
-      "permanent": true
+      "notes": "Use weight 0.1-0.9 based on severity of anatomical issues. Triggered by 'imagination' keyword.",
+      "permanent": false
     },
     "detail_enhancer": {
       "name": "Detail  Enhancer",
@@ -100,8 +99,8 @@
       "prepend_prompt": "",
       "append_prompt": "",
       "negative_prompt": "",
-      "notes": "",
-      "permanent": true
+      "notes": "Triggered by 'detail_enhancer' keyword.",
+      "permanent": false
     },
     "detailed_hands": {
       "name": "Hand (Anatomy Fix)",
@@ -114,8 +113,8 @@
       "prepend_prompt": "detailed hands",
       "append_prompt": "",
       "negative_prompt": "",
-      "notes": "",
-      "permanent": true
+      "notes": "Triggered by 'detailed_hands' keyword.",
+      "permanent": false
     },
     "man": {
       "name": "Man (Male Portrayal)",
@@ -166,8 +165,8 @@
       "prepend_prompt": "",
       "append_prompt": "",
       "negative_prompt": "",
-      "notes": "Weight range 0.1-1.0 depending on desired intensity",
-      "permanent": true
+      "notes": "Weight range 0.1-1.0 depending on desired intensity. Triggered by 'indian_face' keyword.",
+      "permanent": false
     },
     "indian_ethnicity": {
       "name": "Indian Female Ethnicity",
@@ -202,8 +201,8 @@
       "prepend_prompt": "",
       "append_prompt": "",
       "negative_prompt": "",
-      "notes": "General NSFW enhancement",
-      "permanent": true
+      "notes": "General NSFW enhancement. Triggered by 'nsfw0' keyword.",
+      "permanent": false
     },
     "nsfw_busts": {
       "name": "NSFW Perfect Busts",
@@ -218,8 +217,8 @@
       "prepend_prompt": "woman",
       "append_prompt": "",
       "negative_prompt": "",
-      "notes": "General NSFW Bust enhancement",
-      "permanent": true
+      "notes": "General NSFW Bust enhancement. Triggered by 'nsfw_busts' keyword.",
+      "permanent": false
     },
     "nsfw_master": {
       "name": "NSFW Master",
