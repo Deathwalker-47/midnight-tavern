@@ -326,8 +326,12 @@ async def run_hq_job(job_id: uuid.UUID) -> None:
                 {"event": "image_started", "data": {"job_id": str(job_id), "kind": "hq"}},
             )
 
-            canvas_w = settings.HQ_CANVAS_W
-            canvas_h = settings.HQ_CANVAS_H
+            # Honor the requested dimensions from the job row; the request
+            # schema defaults to 1024×1024 but callers can pass arbitrary
+            # values up to 2048. The composer scales its 1536×1024 reference
+            # slots to whatever canvas is in play.
+            canvas_w = job.width
+            canvas_h = job.height
             num_chars = min(len(character_ids), 5)
             character_ids = character_ids[:num_chars]
             layout_name, slots = pick_layout(num_chars)
@@ -400,6 +404,9 @@ async def run_hq_job(job_id: uuid.UUID) -> None:
                 )
 
             # Pass 1..N — per-character inpaint.
+            successful_inpaints = 0
+            failed_inpaints = 0
+            inpaint_failure_reason: str | None = None
             for idx, character in enumerate(characters):
                 slot = scaled_slots[idx]
                 await channel.publish(
@@ -448,12 +455,17 @@ async def run_hq_job(job_id: uuid.UUID) -> None:
                         timeout_s=per_pass_timeout,
                     )
                     current_image = next_image
+                    successful_inpaints += 1
                     if used not in providers_attempted:
                         providers_attempted.append(used)
                 except _AllInpaintProvidersFailed as exc:
-                    # Partial result: keep what we have so far rather than
-                    # failing the whole job. Matches upstream MultiCharPipeline
-                    # behavior (break out of the loop on failure).
+                    # Track the failure but keep going — for multi-char,
+                    # we may still produce a useful partial result with
+                    # other characters rendered. If none succeed at all
+                    # we fail the job below rather than silently shipping
+                    # a backdrop with no character (Codex P1 review).
+                    failed_inpaints += 1
+                    inpaint_failure_reason = str(exc)
                     logger.warning(
                         "hq_inpaint_pass_failed",
                         job_id=str(job_id),
@@ -462,9 +474,24 @@ async def run_hq_job(job_id: uuid.UUID) -> None:
                     )
                     break
 
+            # If no character pass succeeded, the only thing in current_image
+            # is the backdrop — that's not the HQ render the user asked for.
+            # Surface as a failed job with explicit code, instead of returning
+            # a misleading "completed" state. Multi-char calls keep partial
+            # results when at least one character rendered.
+            if successful_inpaints == 0 and failed_inpaints > 0:
+                raise _AllInpaintProvidersFailed(
+                    inpaint_failure_reason or "all character inpaint passes failed"
+                )
+
             # Pass N+1 — optional harmonization (only meaningful with adjacent
-            # slots, so 3+ characters by default).
-            do_harmonize = settings.HQ_HARMONIZE_ENABLED and num_chars >= 3
+            # slots, so 3+ characters by default and at least 2 successful
+            # inpaints — no point harmonizing seams that don't exist).
+            do_harmonize = (
+                settings.HQ_HARMONIZE_ENABLED
+                and num_chars >= 3
+                and successful_inpaints >= 2
+            )
             if do_harmonize:
                 await channel.publish(
                     job_id,
@@ -510,12 +537,19 @@ async def run_hq_job(job_id: uuid.UUID) -> None:
                 **(job.composite_meta or {}),
                 "layout": layout_name,
                 "num_characters": num_chars,
+                "successful_inpaints": successful_inpaints,
+                "failed_inpaints": failed_inpaints,
                 "harmonized": do_harmonize,
                 "canvas": [canvas_w, canvas_h],
             }
             job.completed_at = datetime.now(timezone.utc)
             await db.commit()
 
+            total_passes = (
+                1  # backdrop
+                + successful_inpaints
+                + (1 if do_harmonize else 0)
+            )
             await channel.publish(
                 job_id,
                 {
@@ -525,7 +559,30 @@ async def run_hq_job(job_id: uuid.UUID) -> None:
                         "provider": "hq_multichar",
                         "cache_hit": False,
                         "outputs": [{"storage_url": url}],
-                        "hq": {"layout": layout_name, "passes": num_chars + 1 + (1 if do_harmonize else 0)},
+                        "hq": {
+                            "layout": layout_name,
+                            "passes": total_passes,
+                            "successful_inpaints": successful_inpaints,
+                            "failed_inpaints": failed_inpaints,
+                        },
+                    },
+                },
+            )
+        except _AllInpaintProvidersFailed as exc:
+            # All character inpaint passes failed — the backdrop alone is
+            # not the HQ render the user requested.
+            job.status = ImageJobStatus.failed
+            job.error_code = "hq_no_inpaint_provider"
+            job.error_message = str(exc)
+            await db.commit()
+            await channel.publish(
+                job_id,
+                {
+                    "event": "image_failed",
+                    "data": {
+                        "job_id": str(job_id),
+                        "error": str(exc),
+                        "code": "hq_no_inpaint_provider",
                     },
                 },
             )

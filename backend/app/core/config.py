@@ -53,8 +53,8 @@ class Settings(BaseSettings):
 
     # HQ MultiCharPipeline tuning (Phase 5). Ported defaults from
     # Silly-Tavern-Flux-Bridge/flux_lora_bridge.py Config (MULTI_CHAR_*).
-    HQ_CANVAS_W: int = 1536
-    HQ_CANVAS_H: int = 1024
+    # Canvas dimensions come from the per-job request (job.width/height) so
+    # they aren't config knobs here.
     HQ_BG_STEPS: int = 25
     HQ_FG_STEPS: int = 25
     HQ_FG_STRENGTH: float = 0.92

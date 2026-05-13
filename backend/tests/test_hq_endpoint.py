@@ -175,6 +175,88 @@ async def test_hq_endpoint_with_character_runs_multicharpipeline(
     assert "character_1" in progress_stages
 
 
+async def test_hq_endpoint_honors_requested_dimensions(
+    client, unique_username, tmp_path, monkeypatch
+):
+    """Codex P2: HQ must use the request's width/height instead of
+    hardcoding a canvas. Verify by passing non-default dimensions and
+    asserting composite_meta.canvas matches."""
+    from app.core import config as config_mod
+    from app.modules.images import storage as storage_mod
+    from app.modules.images.providers import dummy as dummy_mod
+
+    config_mod.settings.IMAGES_STORAGE_DIR = str(tmp_path / "hq-imgs-dims")
+    storage_mod.reset_storage_for_tests()
+
+    received_params: list[dict] = []
+    original_inpaint = dummy_mod.DummyProvider.generate_inpaint
+
+    async def _capture_inpaint(self, **kwargs):  # type: ignore[no-untyped-def]
+        received_params.append({"width": kwargs["params"].get("width"), "height": kwargs["params"].get("height")})
+        return await original_inpaint(self, **kwargs)
+
+    monkeypatch.setattr(dummy_mod.DummyProvider, "generate_inpaint", _capture_inpaint)
+
+    await _register_and_login(client, unique_username)
+    character_id = await _create_character(client)
+
+    res = await client.post(
+        "/api/v1/images/generate_hq",
+        json={
+            "prompt": "wide panoramic vista",
+            "character_id": character_id,
+            "width": 1536,
+            "height": 1024,
+        },
+    )
+    assert res.status_code == 201, res.text
+    job_id = res.json()["id"]
+
+    body = await _poll_until_terminal(client, job_id)
+    assert body["status"] == "completed", body
+    assert body["composite_meta"]["canvas"] == [1536, 1024]
+    # The output dimensions match.
+    assert body["outputs"][0]["width"] == 1536
+    assert body["outputs"][0]["height"] == 1024
+    # The inpaint pass got the requested canvas, not a hardcoded default.
+    assert received_params == [{"width": 1536, "height": 1024}]
+
+
+async def test_hq_endpoint_fails_when_no_inpaint_provider_succeeds(
+    client, unique_username, tmp_path, monkeypatch
+):
+    """Codex P1: when every inpaint provider fails, the job must be
+    marked failed (with an error_code) instead of completing silently with
+    only the backdrop bytes."""
+    from app.core import config as config_mod
+    from app.modules.images import storage as storage_mod
+    from app.modules.images.providers import dummy as dummy_mod
+
+    config_mod.settings.IMAGES_STORAGE_DIR = str(tmp_path / "hq-imgs-fail")
+    storage_mod.reset_storage_for_tests()
+
+    async def _always_fail_inpaint(self, **_kwargs):  # type: ignore[no-untyped-def]
+        # Simulate a provider that doesn't implement inpaint at all (the
+        # fal/wavespeed case Codex flagged).
+        raise NotImplementedError("dummy inpaint disabled for this test")
+
+    monkeypatch.setattr(dummy_mod.DummyProvider, "generate_inpaint", _always_fail_inpaint)
+
+    await _register_and_login(client, unique_username)
+    character_id = await _create_character(client)
+
+    res = await client.post(
+        "/api/v1/images/generate_hq",
+        json={"prompt": "captain on bridge", "character_id": character_id},
+    )
+    assert res.status_code == 201, res.text
+    job_id = res.json()["id"]
+
+    body = await _poll_until_terminal(client, job_id)
+    assert body["status"] == "failed", body
+    assert body["error_code"] == "hq_no_inpaint_provider"
+
+
 async def test_hq_endpoint_requires_auth(client) -> None:
     res = await client.post(
         "/api/v1/images/generate_hq", json={"prompt": "anonymous attempt"}
